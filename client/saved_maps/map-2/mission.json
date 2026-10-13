@@ -1,0 +1,61 @@
+{
+  "map": {
+    "image": "map.pgm",
+    "resolution": 0.8002,
+    "origin": [
+      -422.4,
+      -400.75,
+      0
+    ],
+    "bottom_left": {
+      "lat": 19.07658,
+      "lon": 72.981505
+    },
+    "width": 788,
+    "height": 834,
+    "source": "ESRI"
+  },
+  "start": {
+    "lat": 19.080175505796216,
+    "lon": 72.9855170967331,
+    "px": [
+      526,
+      334
+    ],
+    "utm": {
+      "e": 288043.0734894895,
+      "n": 2110917.1272153724,
+      "zone": 43,
+      "hemi": "N"
+    }
+  },
+  "goal": {
+    "lat": 19.079997957534403,
+    "lon": 72.98480517007745,
+    "px": [
+      433,
+      358
+    ],
+    "utm": {
+      "e": 287967.9164996736,
+      "n": 2110898.333813977,
+      "zone": 43,
+      "hemi": "N"
+    }
+  },
+  "waypoints": [],
+  "zones": [],
+  "classify_settings": {
+    "hueMin": 122,
+    "hueMax": 152,
+    "satMin": 7,
+    "valMin": 10,
+    "valMax": 50,
+    "black": 55,
+    "gray": 14,
+    "unkDefault": true,
+    "mNeg": 0,
+    "mOcc": 0.65,
+    "mFree": 0.196
+  }
+}

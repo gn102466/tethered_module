@@ -1,0 +1,61 @@
+{
+  "map": {
+    "image": "map.pgm",
+    "resolution": 0.8002,
+    "origin": [
+      -266.38,
+      -293.33,
+      0
+    ],
+    "bottom_left": {
+      "lat": 19.07658,
+      "lon": 72.981505
+    },
+    "width": 788,
+    "height": 834,
+    "source": "Saved: map"
+  },
+  "start": {
+    "lat": 19.079215,
+    "lon": 72.984037,
+    "px": [
+      332,
+      467
+    ],
+    "utm": {
+      "e": 287886.06848975644,
+      "n": 2110812.588203975,
+      "zone": 43,
+      "hemi": "N"
+    }
+  },
+  "goal": {
+    "lat": 19.07918,
+    "lon": 72.98375,
+    "px": [
+      295,
+      472
+    ],
+    "utm": {
+      "e": 287855.8167035612,
+      "n": 2110809.0611875183,
+      "zone": 43,
+      "hemi": "N"
+    }
+  },
+  "waypoints": [],
+  "zones": [],
+  "classify_settings": {
+    "hueMin": 133,
+    "hueMax": 163,
+    "satMin": 15,
+    "valMin": 4,
+    "valMax": 44,
+    "black": 55,
+    "gray": 14,
+    "unkDefault": true,
+    "mNeg": 0,
+    "mOcc": 0.65,
+    "mFree": 0.196
+  }
+}

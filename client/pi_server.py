@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""
+Raspberry Pi server for ROV/AUV communication.
+
+Features:
+- JSON telemetry (simulated IMU, depth, battery, GPS)
+- Heartbeat sender every second
+- Command execution (arm, disarm, lights, etc.)
+- Binary file upload / download (streaming, no base64)
+
+Start with: python3 pi_server.py
+"""
+import socket
+import threading
+import json
+import struct
+import time
+import logging
+import random
+import os
+import sys
+from queue import Queue, Empty
+from pathlib import Path
+
+# ----------------------------------------------------------------------
+# Configuration
+# ----------------------------------------------------------------------
+HOST = "0.0.0.0"
+PORT = 9000
+HEARTBEAT_INTERVAL = 1.0       # seconds
+HEARTBEAT_TIMEOUT   = 5.0       # seconds (server doesn't monitor, but we keep)
+FILE_CHUNK_SIZE = 65536         # 64 KB
+RECV_BUFFER = 65536
+
+# Packet type bytes (custom simple protocol)
+PKT_HEARTBEAT      = 0x01
+PKT_HEARTBEAT_ACK  = 0x02
+PKT_JSON           = 0x10   # followed by 4-byte length, then UTF-8 JSON
+PKT_FILE_REQ       = 0x11   # JSON payload: {"filename":..., "size":..., "direction":"upload"/"download"}
+PKT_FILE_CHUNK     = 0x12   # 4-byte filename_len, filename, 4-byte chunk_len, chunk data
+PKT_FILE_COMPLETE  = 0x13   # JSON payload: {"status":"ok"/"error"}
+
+MAGIC = b"ROVC"              # 4-byte magic to validate framing
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s [%(levelname)s] %(message)s",
+                    datefmt="%H:%M:%S")
+log = logging.getLogger("PiServer")
+
+# ----------------------------------------------------------------------
+# Packet framing helpers
+# ----------------------------------------------------------------------
+def pack_message(msg_type: int, payload: bytes) -> bytes:
+    """Create a framed message: MAGIC(4) + TYPE(1) + LENGTH(4) + PAYLOAD."""
+    return MAGIC + struct.pack("!BI", msg_type, len(payload)) + payload
+
+def pack_json(msg_type: int, obj: dict) -> bytes:
+    """Pack a JSON-serializable dictionary into a framed message."""
+    data = json.dumps(obj).encode("utf-8")
+    return pack_message(msg_type, data)
+
+# ----------------------------------------------------------------------
+# Connection manager (one client at a time)
+# ----------------------------------------------------------------------
+class Connection:
+    def __init__(self, sock, addr):
+        self.sock = sock
+        self.addr = addr
+        self.send_queue = Queue()
+        self.recv_queue = Queue()
+        self._stop = threading.Event()
+        self._send_thread = None
+        self._recv_thread = None
+
+    def start(self):
+        self._send_thread = threading.Thread(target=self._send_loop, daemon=True)
+        self._recv_thread = threading.Thread(target=self._recv_loop, daemon=True)
+        self._send_thread.start()
+        self._recv_thread.start()
+        log.info(f"Connected to {self.addr}")
+
+    def stop(self):
+        self._stop.set()
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        self.sock.close()
+        if self._send_thread:
+            self._send_thread.join(timeout=2)
+        if self._recv_thread:
+            self._recv_thread.join(timeout=2)
+
+    def _send_loop(self):
+        while not self._stop.is_set():
+            try:
+                data = self.send_queue.get(timeout=0.5)
+                self.sock.sendall(data)
+                log.debug(f"TX {len(data)} bytes")
+            except Empty:
+                continue
+            except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                log.error(f"Send error: {e}")
+                self._stop.set()
+                break
+
+    def _recv_loop(self):
+        buffer = bytearray()
+        while not self._stop.is_set():
+            try:
+                chunk = self.sock.recv(RECV_BUFFER)
+                if not chunk:
+                    log.info("Client disconnected")
+                    self._stop.set()
+                    break
+                buffer.extend(chunk)
+                # Parse complete messages
+                while len(buffer) >= 9:   # MAGIC(4)+TYPE(1)+LEN(4)
+                    if buffer[:4] != MAGIC:
+                        log.error("Invalid magic, discarding byte")
+                        buffer.pop(0)
+                        continue
+                    msg_type = buffer[4]
+                    payload_len = struct.unpack("!I", buffer[5:9])[0]
+                    total_len = 9 + payload_len
+                    if len(buffer) < total_len:
+                        break  # wait for more data
+                    payload = bytes(buffer[9:total_len])
+                    del buffer[:total_len]
+                    # Put parsed packet into receive queue
+                    self.recv_queue.put((msg_type, payload))
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                log.error(f"Receive error: {e}")
+                self._stop.set()
+                break
+
+# ----------------------------------------------------------------------
+# Telemetry simulator
+# ----------------------------------------------------------------------
+def generate_telemetry():
+    return {
+        "roll": round(random.uniform(-30, 30), 2),
+        "pitch": round(random.uniform(-30, 30), 2),
+        "yaw": round(random.uniform(0, 360), 2),
+        "depth": round(random.uniform(0, 100), 2),
+        "battery": round(random.uniform(11.0, 12.6), 2),
+        "temperature": round(random.uniform(10, 40), 1),
+        "gps": {
+            "lat": round(random.uniform(-90, 90), 6),
+            "lon": round(random.uniform(-180, 180), 6),
+            "alt": round(random.uniform(-50, 500), 2)
+        }
+    }
+
+# ----------------------------------------------------------------------
+# File transfer handler
+# ----------------------------------------------------------------------
+class FileTransfer:
+    def __init__(self, conn: Connection):
+        self.conn = conn
+        self.base_dir = Path("./pi_files")
+        self.base_dir.mkdir(exist_ok=True)
+        self._current_upload = None   # file handle + expected size
+
+    def process(self, msg_type, payload):
+        if msg_type == PKT_FILE_REQ:
+            self._handle_request(payload)
+        elif msg_type == PKT_FILE_CHUNK:
+            self._handle_chunk(payload)
+        elif msg_type == PKT_FILE_COMPLETE:
+            self._handle_complete(payload)
+
+    def _handle_request(self, payload):
+        try:
+            req = json.loads(payload.decode())
+            filename = Path(req["filename"]).name  # avoid path traversal
+            direction = req.get("direction", "upload")
+            if direction == "upload":
+                # Client wants to send a file to Pi
+                size = req["size"]
+                dest_path = self.base_dir / filename
+                log.info(f"Receiving upload: {filename} ({size} bytes)")
+                try:
+                    f = open(dest_path, "wb")
+                except OSError as e:
+                    self._send_error(str(e))
+                    return
+                self._current_upload = {"file": f, "expected_size": size, "received": 0}
+                # Tell client we're ready
+                self.conn.send_queue.put(pack_json(PKT_JSON, {"type": "file_ready", "filename": filename}))
+            elif direction == "download":
+                # Client wants to download a file from Pi
+                file_path = self.base_dir / filename
+                if not file_path.exists():
+                    self._send_error("File not found")
+                    return
+                file_size = file_path.stat().st_size
+                log.info(f"Sending file: {filename} ({file_size} bytes)")
+                # Send header
+                self.conn.send_queue.put(pack_json(PKT_FILE_REQ, {
+                    "filename": filename,
+                    "size": file_size,
+                    "direction": "download"
+                }))
+                # Stream chunks
+                with open(file_path, "rb") as f:
+                    while True:
+                        chunk = f.read(FILE_CHUNK_SIZE)
+                        if not chunk:
+                            break
+                        # Build binary chunk: filename_len(4) + filename + chunk_len(4) + chunk
+                        name_bytes = filename.encode("utf-8")
+                        chunk_msg = struct.pack("!I", len(name_bytes)) + name_bytes + struct.pack("!I", len(chunk)) + chunk
+                        self.conn.send_queue.put(pack_message(PKT_FILE_CHUNK, chunk_msg))
+                        time.sleep(0)  # yield
+                # Completion
+                self.conn.send_queue.put(pack_json(PKT_FILE_COMPLETE, {"status": "ok"}))
+                log.info(f"File {filename} sent")
+        except Exception as e:
+            log.error(f"File request error: {e}")
+            self._send_error(str(e))
+
+    def _handle_chunk(self, payload):
+        if not self._current_upload:
+            log.warning("Received chunk without active upload")
+            return
+        try:
+            self._current_upload["file"].write(payload)
+            self._current_upload["received"] += len(payload)
+        except OSError as e:
+            log.error(f"Write error: {e}")
+            self._abort_upload()
+            return
+
+    def _handle_complete(self, payload):
+        if not self._current_upload:
+            log.warning("Unexpected file complete")
+            return
+        try:
+            status = json.loads(payload.decode()).get("status", "ok")
+            if status == "ok":
+                self._current_upload["file"].close()
+                log.info(f"Upload complete: {self._current_upload['expected_size']} bytes")
+            else:
+                log.error("Upload failed according to client")
+                self._current_upload["file"].close()
+        except Exception as e:
+            log.error(f"Error finalising upload: {e}")
+        finally:
+            self._current_upload = None
+
+    def _abort_upload(self):
+        if self._current_upload:
+            self._current_upload["file"].close()
+            self._current_upload = None
+        self._send_error("Upload aborted")
+
+    def _send_error(self, message):
+        self.conn.send_queue.put(pack_json(PKT_JSON, {"type": "error", "message": message}))
+
+# ----------------------------------------------------------------------
+# Command handler
+# ----------------------------------------------------------------------
+VALID_COMMANDS = {"arm", "disarm", "lights_on", "lights_off", "start_recording", "stop_recording"}
+
+def handle_command(conn: Connection, data: dict):
+    task = data.get("task")
+    if task not in VALID_COMMANDS:
+        log.warning(f"Unknown command: {task}")
+        conn.send_queue.put(pack_json(PKT_JSON, {"type": "command_ack", "success": False, "message": f"Unknown command: {task}"}))
+        return
+    log.info(f"Executing command: {task}")
+    # Simulate execution (replace with real GPIO/Motor control)
+    # ...
+    conn.send_queue.put(pack_json(PKT_JSON, {"type": "command_ack", "success": True, "message": f"Command {task} executed"}))
+
+# ----------------------------------------------------------------------
+# Main server loop
+# ----------------------------------------------------------------------
+def main():
+    # Create a test file for download testing
+    os.makedirs("./pi_files", exist_ok=True)
+    with open("./pi_files/test.txt", "w") as f:
+        f.write("Hello from Raspberry Pi!\n" * 1000)
+
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.bind((HOST, PORT))
+    server_sock.listen(1)
+    log.info(f"Pi server listening on {HOST}:{PORT}")
+
+    while True:
+        client_sock, addr = server_sock.accept()
+        conn = Connection(client_sock, addr)
+        conn.start()
+
+        # Start services
+        ft = FileTransfer(conn)
+        stop_flag = threading.Event()
+
+        # Heartbeat sender thread
+        def heartbeat_sender():
+            while not stop_flag.is_set():
+                conn.send_queue.put(pack_message(PKT_HEARTBEAT, b""))
+                time.sleep(HEARTBEAT_INTERVAL)
+        hb_thread = threading.Thread(target=heartbeat_sender, daemon=True)
+        hb_thread.start()
+
+        # Telemetry sender thread
+        def telemetry_sender():
+            while not stop_flag.is_set():
+                telem = generate_telemetry()
+                conn.send_queue.put(pack_json(PKT_JSON, {"type": "telemetry", "data": telem}))
+                time.sleep(0.01)  # ~100 Hz
+        telem_thread = threading.Thread(target=telemetry_sender, daemon=True)
+        telem_thread.start()
+
+        # Main processing loop for incoming packets
+        try:
+            while True:
+                try:
+                    msg_type, payload = conn.recv_queue.get(timeout=0.5)
+                except Empty:
+                    continue
+
+                if msg_type == PKT_HEARTBEAT:
+                    # Reply with ack
+                    conn.send_queue.put(pack_message(PKT_HEARTBEAT_ACK, b""))
+                elif msg_type == PKT_HEARTBEAT_ACK:
+                    pass  # server doesn't monitor, but could
+                elif msg_type == PKT_JSON:
+                    try:
+                        msg = json.loads(payload.decode())
+                        if msg.get("type") == "command":
+                            handle_command(conn, msg)
+                        # Other JSON types can be added here
+                    except json.JSONDecodeError:
+                        log.error("Malformed JSON")
+                elif msg_type in (PKT_FILE_REQ, PKT_FILE_CHUNK, PKT_FILE_COMPLETE):
+                    ft.process(msg_type, payload)
+                else:
+                    log.warning(f"Unknown packet type: {msg_type:02x}")
+
+        except (ConnectionError, Exception) as e:
+            log.error(f"Connection lost: {e}")
+        finally:
+            stop_flag.set()
+            hb_thread.join(timeout=1)
+            telem_thread.join(timeout=1)
+            conn.stop()
+            log.info("Client disconnected, waiting for next connection...")
+
+if __name__ == "__main__":
+    main()

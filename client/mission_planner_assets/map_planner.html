@@ -1,0 +1,2484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AUV GCS — Map → ROS2 Occupancy Grid</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230A0F1D' stroke='%232563EB' stroke-width='2'/%3E%3Ccircle cx='16' cy='16' r='9' fill='none' stroke='%2338BDF8' stroke-width='1.8'/%3E%3Cpath d='M16 4v6m0 12v6M4 16h6m12 0h6' stroke='%2338BDF8' stroke-width='1.8' stroke-linecap='round'/%3E%3Ccircle cx='16' cy='16' r='2.5' fill='%2338BDF8'/%3E%3C/svg%3E">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<style>
+  :root, :root[data-theme="dark"], [data-theme="dark"] {
+    --abyss:#060b14; --panel:#0b1322; --panel2:#111d32; --raise:#172742;
+    --border:#1e304c; --border2:#2b4469;
+    --text:#e2ecf7; --muted:#8ba3be; --dim:#597391;
+    --sonar:#06b6d4; --sonar-dim:#0284c7;
+    --free:#10b981; --occ:#ef4444; --unk:#64748b;
+    --start:#38bdf8; --goal:#f59e0b; --wp:#a855f7;
+    --hud-bg:rgba(11,19,34,0.92);
+    --hud-border:rgba(56,189,248,0.26);
+    --stage-grid:rgba(56,189,248,0.045);
+    --canvas-well:#040811;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  :root[data-theme="black"], [data-theme="black"] {
+    --abyss:#020408; --panel:#070b12; --panel2:#0d1422; --raise:#131d31;
+    --border:#1a263b; --border2:#273854;
+    --text:#eaf1f8; --muted:#8fa3ba; --dim:#586b82;
+    --sonar:#38bdf8; --sonar-dim:#0284c7;
+    --free:#10b981; --occ:#ef4444; --unk:#64748b;
+    --start:#38bdf8; --goal:#f59e0b; --wp:#a855f7;
+    --hud-bg:rgba(7,11,18,0.94);
+    --hud-border:rgba(56,189,248,0.28);
+    --stage-grid:rgba(56,189,248,0.04);
+    --canvas-well:#020408;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  :root[data-theme="light"], [data-theme="light"] {
+    --abyss:#e8eff7; --panel:#ffffff; --panel2:#f4f7fb; --raise:#e2e8f0;
+    --border:#cbd5e1; --border2:#94a3b8;
+    --text:#0f172a; --muted:#475569; --dim:#64748b;
+    --sonar:#0284c7; --sonar-dim:#1d4ed8;
+    --free:#059669; --occ:#dc2626; --unk:#64748b;
+    --start:#0284c7; --goal:#d97706; --wp:#7e22ce;
+    --hud-bg:rgba(255,255,255,0.95);
+    --hud-border:#cbd5e1;
+    --stage-grid:rgba(15,23,42,0.055);
+    --canvas-well:#dde6f1;
+    --mono:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    background:var(--abyss);color:var(--text);font-family:var(--sans);
+    font-size:12.5px;line-height:1.4;overflow:hidden;
+    -webkit-font-smoothing:antialiased;
+  }
+  button{font-family:inherit;color:inherit;cursor:pointer;border:none;background:none}
+  input,select{font-family:inherit;color:inherit}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* ---------- shell ---------- */
+  .app{display:grid;grid-template-rows:auto 1fr auto;height:100vh}
+  header.top{
+    display:flex;align-items:center;justify-content:space-between;gap:14px;padding:8px 16px;
+    background:linear-gradient(180deg,var(--panel2) 0%,var(--panel) 100%);
+    border-bottom:1px solid var(--border);
+    box-shadow:0 2px 10px rgba(0,0,0,0.14);
+    z-index:10;
+  }
+  [data-theme="light"] header.top{
+    background:linear-gradient(180deg,#ffffff 0%,#f8fafc 100%);
+    box-shadow:0 1px 4px rgba(15,23,42,0.05);
+  }
+  .brand{display:flex;align-items:center;gap:11px;font-weight:800;letter-spacing:.03em;font-size:13.5px;color:var(--text)}
+  .brand .glyph{
+    width:32px;height:32px;border-radius:8px;display:grid;place-items:center;flex-shrink:0;
+    background:linear-gradient(145deg,#2563eb 0%,#1d4ed8 48%,#0f296b 100%) !important;
+    border:1px solid rgba(96,165,250,0.65) !important;
+    color:#ffffff !important;font-weight:800;font-size:13px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.35),0 3px 10px rgba(29,78,216,0.35) !important;
+  }
+  [data-theme="light"] .brand .glyph{
+    background:linear-gradient(145deg,#2563eb 0%,#1d4ed8 55%,#0284c7 100%) !important;
+    border-color:#1e40af !important;color:#ffffff !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.4),0 2px 8px rgba(37,99,235,0.25) !important;
+  }
+  .brand-text{display:flex;align-items:center;gap:8px;flex-wrap:nowrap}
+  .brand small{
+    color:var(--sonar);font-weight:700;letter-spacing:.08em;font-size:10px;
+    font-family:var(--mono);text-transform:uppercase;
+    padding:2px 8px;border-radius:4px;
+    background:rgba(6,182,212,0.10);border:1px solid rgba(6,182,212,0.26);
+  }
+  [data-theme="light"] .brand small{
+    color:#0369a1;background:rgba(2,132,199,0.08);border-color:rgba(2,132,199,0.25);
+  }
+  .status{
+    margin-left:auto;display:inline-flex !important;gap:5px !important;align-items:center !important;
+    flex-wrap:nowrap !important;justify-content:flex-end;
+    padding:4px 5px !important;border-radius:7px !important;
+    background:#080D17 !important;border:1px solid #1E2D45 !important;
+    box-shadow:inset 0 1px 3px rgba(0,0,0,0.55),0 1px 0 rgba(255,255,255,0.03) !important;
+    font-family:var(--mono) !important;font-size:10.5px !important;
+  }
+  [data-theme="light"] .status{
+    background:#E2E8F0 !important;border-color:#CBD5E1 !important;
+    box-shadow:inset 0 1px 2px rgba(15,23,42,0.08),0 1px 0 rgba(255,255,255,0.9) !important;
+  }
+  .pill, .status .pill, .pill.tool, .pill.live{
+    display:inline-flex !important;flex-direction:row !important;align-items:center !important;
+    justify-content:flex-start !important;gap:7px !important;
+    height:27px !important;min-height:27px !important;padding:0 10px 0 9px !important;border-radius:4.5px !important;
+    font-family:var(--mono) !important;font-size:10px !important;font-weight:600 !important;
+    text-transform:uppercase !important;letter-spacing:.05em !important;
+    background:linear-gradient(180deg,#162032 0%,#0F1726 100%) !important;
+    border:1px solid #243552 !important;border-left:2.5px solid #475569 !important;
+    color:#94A3B8 !important;
+    white-space:nowrap !important;flex-shrink:0 !important;line-height:1 !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.05),0 1px 2px rgba(0,0,0,0.35) !important;
+  }
+  .status .pill::before{
+    content:"";width:5.5px;height:5.5px;border-radius:50%;background:#64748B;flex-shrink:0;order:3;margin-left:2px;
+  }
+  .pill b{
+    color:#F8FAFC !important;font-weight:800 !important;letter-spacing:.04em !important;
+    padding:2px 5px !important;border-radius:3px !important;
+    background:rgba(255,255,255,0.05) !important;border:1px solid rgba(255,255,255,0.07) !important;
+  }
+  .pill.live{border-left-color:#10B981 !important}
+  .status .pill.live::before{background:#10B981 !important;box-shadow:0 0 6px rgba(16,185,129,0.65) !important}
+  .pill.live b{color:#34D399 !important;background:rgba(16,185,129,0.12) !important;border-color:rgba(16,185,129,0.28) !important}
+  .pill.tool, #stTool.pill{border-left-color:#3B82F6 !important}
+  .status .pill.tool::before, #stTool.pill::before{background:#38BDF8 !important;box-shadow:0 0 5px rgba(56,189,248,0.5) !important}
+  .pill.tool b, #stTool.pill b{color:#7DD3FC !important;background:rgba(56,189,248,0.12) !important;border-color:rgba(56,189,248,0.28) !important}
+  #stSrc.pill{border-left-color:#64748B !important}
+  #stSize.pill{border-left-color:#0EA5E9 !important}
+  [data-theme="light"] .pill,
+  [data-theme="light"] .status .pill,
+  [data-theme="light"] .pill.tool,
+  [data-theme="light"] .pill.live{
+    background:linear-gradient(180deg,#FFFFFF 0%,#F8FAFC 100%) !important;
+    border:1px solid #CBD5E1 !important;border-left:2.5px solid #94A3B8 !important;
+    color:#475569 !important;
+    box-shadow:0 1px 2px rgba(15,23,42,0.06),inset 0 1px 0 #FFFFFF !important;
+  }
+  [data-theme="light"] .status .pill::before{background:#94A3B8 !important}
+  [data-theme="light"] .pill b{color:#0F172A !important;background:#F1F5F9 !important;border-color:#E2E8F0 !important}
+  [data-theme="light"] .pill.live{border-left-color:#059669 !important}
+  [data-theme="light"] .status .pill.live::before{background:#059669 !important;box-shadow:0 0 4px rgba(5,150,105,0.35) !important}
+  [data-theme="light"] .pill.live b{color:#047857 !important;background:#ECFDF5 !important;border-color:#A7F3D0 !important}
+  [data-theme="light"] .pill.tool, [data-theme="light"] #stTool.pill{border-left-color:#2563EB !important}
+  [data-theme="light"] .status .pill.tool::before, [data-theme="light"] #stTool.pill::before{background:#2563EB !important;box-shadow:0 0 4px rgba(37,99,235,0.35) !important}
+  [data-theme="light"] .pill.tool b, [data-theme="light"] #stTool.pill b{color:#1D4ED8 !important;background:#EFF6FF !important;border-color:#BFDBFE !important}
+  [data-theme="light"] #stSize.pill{border-left-color:#0284C7 !important}
+
+  /* ---------- middle 3 cols ---------- */
+  .mid{display:grid;grid-template-columns:238px 1fr 330px;min-height:0}
+  .rail,.side{background:var(--panel);overflow-y:auto}
+  .rail{border-right:1px solid var(--border);display:flex;flex-direction:column}
+  .side{border-left:1px solid var(--border)}
+  .center{
+    display:grid;grid-template-rows:1fr auto;min-width:0;min-height:0;
+    background-color:var(--abyss) !important;
+    background-image:
+      linear-gradient(to right,var(--stage-grid) 1px,transparent 1px),
+      linear-gradient(to bottom,var(--stage-grid) 1px,transparent 1px) !important;
+    background-size:24px 24px !important;
+  }
+
+  /* ---------- tool rail ---------- */
+  .group{padding:11px 11px 10px;border-bottom:1px solid var(--border)}
+  .group:last-child{border-bottom:none}
+  .group h4{
+    font-size:9.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted) !important;
+    margin:0 0 8px;font-weight:800;display:flex;align-items:center;gap:6px;
+  }
+  .group h4::before{
+    content:"";width:3px;height:10px;border-radius:2px;
+    background:linear-gradient(180deg,var(--sonar) 0%,var(--sonar-dim) 100%);
+    flex-shrink:0;
+  }
+  .toolgrid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+  .rail .tool{
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;
+    padding:9px 6px !important;min-height:52px;
+    border:1px solid var(--border) !important;border-radius:7px !important;
+    background:linear-gradient(180deg,var(--panel2) 0%,var(--abyss) 100%) !important;
+    font-size:10.5px !important;font-weight:600 !important;color:var(--muted) !important;
+    transition:all .15s ease !important;text-align:center;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.05),0 1px 2px rgba(0,0,0,0.18);
+  }
+  [data-theme="light"] .rail .tool{
+    background:linear-gradient(180deg,#ffffff 0%,#f1f5f9 100%) !important;
+    border-color:#cbd5e1 !important;color:#475569 !important;
+    box-shadow:inset 0 1px 0 #ffffff,0 1px 2px rgba(15,23,42,0.05);
+  }
+  .rail .tool[data-tool="pick-water"]{
+    grid-column:span 2;flex-direction:row;min-height:36px;padding:7px 10px !important;gap:8px;
+  }
+  .rail .tool:hover{
+    border-color:var(--border2) !important;color:var(--text) !important;
+    background:var(--raise) !important;transform:translateY(-1px);
+  }
+  [data-theme="light"] .rail .tool:hover{
+    background:#e2e8f0 !important;border-color:#94a3b8 !important;color:#0f172a !important;
+  }
+  .rail .tool.active{
+    border-color:var(--sonar) !important;color:var(--sonar) !important;
+    background:linear-gradient(180deg,rgba(6,182,212,0.20) 0%,rgba(6,182,212,0.08) 100%) !important;
+    box-shadow:inset 0 0 0 1px var(--sonar),0 2px 8px rgba(6,182,212,0.18) !important;
+    font-weight:700 !important;
+  }
+  [data-theme="light"] .rail .tool.active{
+    border-color:#0284c7 !important;color:#0369a1 !important;
+    background:linear-gradient(180deg,rgba(2,132,199,0.16) 0%,rgba(2,132,199,0.06) 100%) !important;
+    box-shadow:inset 0 0 0 1px #0284c7,0 2px 6px rgba(2,132,199,0.14) !important;
+  }
+  .rail .tool svg{width:17px;height:17px;stroke:currentColor;fill:none;stroke-width:1.85;flex-shrink:0}
+  .btn{
+    width:100%;min-height:31px !important;padding:5px 11px !important;
+    border:1px solid #283A52 !important;border-radius:6px !important;
+    background:linear-gradient(180deg,#162235 0%,#0F1826 100%) !important;
+    color:#E2ECF7 !important;font-size:11.5px !important;font-weight:600 !important;
+    transition:all .15s ease !important;
+    display:inline-flex;align-items:center;justify-content:center;gap:6px;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.07),0 1px 2px rgba(0,0,0,0.28) !important;
+    white-space:nowrap;
+  }
+  [data-theme="light"] .btn{
+    background:linear-gradient(180deg,#FFFFFF 0%,#F1F5F9 100%) !important;
+    border-color:#CBD5E1 !important;color:#1E293B !important;
+    box-shadow:inset 0 1px 0 #FFFFFF,0 1px 2px rgba(15,23,42,0.06) !important;
+  }
+  .btn:hover:not(:disabled){
+    background:linear-gradient(180deg,#1E2E47 0%,#152236 100%) !important;
+    border-color:#38BDF8 !important;color:#FFFFFF !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.12),0 2px 6px rgba(0,0,0,0.32) !important;
+    transform:translateY(-1px);
+  }
+  [data-theme="light"] .btn:hover:not(:disabled){
+    background:linear-gradient(180deg,#F8FAFC 0%,#E2E8F0 100%) !important;
+    border-color:#64748B !important;color:#0F172A !important;
+    box-shadow:inset 0 1px 0 #FFFFFF,0 2px 5px rgba(15,23,42,0.08) !important;
+  }
+  /* Primary Action Buttons (.btn.accent) - Restrained Sapphire-Cobalt Tint */
+  .btn.accent{
+    background:linear-gradient(180deg,rgba(37,99,235,0.24) 0%,rgba(2,132,199,0.12) 100%),#121E31 !important;
+    color:#E0F2FE !important;border:1px solid rgba(56,189,248,0.46) !important;font-weight:600 !important;
+    box-shadow:inset 0 1px 0 rgba(125,211,252,0.18),0 1px 3px rgba(0,0,0,0.3) !important;
+  }
+  [data-theme="light"] .btn.accent{
+    background:linear-gradient(180deg,#F0F7FF 0%,#E0EEFF 100%) !important;
+    color:#1E40AF !important;border:1px solid #93C5FD !important;
+    box-shadow:inset 0 1px 0 #FFFFFF,0 1px 2px rgba(37,99,235,0.08) !important;
+  }
+  .btn.accent:hover:not(:disabled){
+    background:linear-gradient(180deg,rgba(37,99,235,0.38) 0%,rgba(2,132,199,0.22) 100%),#16263E !important;
+    border-color:#38BDF8 !important;color:#FFFFFF !important;
+    box-shadow:inset 0 1px 0 rgba(186,230,253,0.25),0 2px 8px rgba(14,165,233,0.24) !important;
+  }
+  [data-theme="light"] .btn.accent:hover:not(:disabled){
+    background:linear-gradient(180deg,#DBEAFE 0%,#BFDBFE 100%) !important;
+    border-color:#3B82F6 !important;color:#1E3A8A !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.85),0 2px 6px rgba(37,99,235,0.15) !important;
+  }
+  /* Destructive / Reset Buttons (.btn.danger) - Restrained Rose-Slate Tint */
+  .btn.danger{
+    color:#FFE4E6 !important;border:1px solid rgba(244,63,94,0.38) !important;
+    background:linear-gradient(180deg,rgba(244,63,94,0.15) 0%,rgba(225,29,72,0.07) 100%),#171B29 !important;
+    box-shadow:inset 0 1px 0 rgba(253,164,175,0.14),0 1px 2px rgba(0,0,0,0.3) !important;
+  }
+  [data-theme="light"] .btn.danger{
+    color:#9F1239 !important;border:1px solid #FDA4AF !important;
+    background:linear-gradient(180deg,#FFF5F6 0%,#FFE8EB 100%) !important;
+    box-shadow:inset 0 1px 0 #FFFFFF,0 1px 2px rgba(225,29,72,0.06) !important;
+  }
+  .btn.danger:hover:not(:disabled){
+    background:linear-gradient(180deg,rgba(244,63,94,0.26) 0%,rgba(225,29,72,0.15) 100%),#1D1E30 !important;
+    border-color:#F43F5E !important;color:#FFFFFF !important;
+  }
+  [data-theme="light"] .btn.danger:hover:not(:disabled){
+    background:linear-gradient(180deg,#FFE4E6 0%,#FECDD3 100%) !important;
+    border-color:#F43F5E !important;color:#881337 !important;
+  }
+  .btn:disabled{
+    opacity:.52 !important;cursor:not-allowed;transform:none !important;filter:saturate(0.65);
+  }
+  .row{display:flex;gap:6px}
+  .row > *{flex:1}
+
+  /* ---------- canvas center ---------- */
+  .stage{position:relative;overflow:hidden;min-height:0}
+  #stageCanvas{position:absolute;inset:0;cursor:crosshair;width:100%;height:100%}
+  .stage.pan #stageCanvas{cursor:grab}
+  .stage.pan.dragging #stageCanvas{cursor:grabbing}
+  .empty{
+    position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--muted);
+    pointer-events:none;padding:24px;
+  }
+  .empty-card{
+    max-width:410px;padding:24px 28px;border-radius:12px;
+    background:var(--hud-bg);backdrop-filter:blur(10px);
+    border:1px solid var(--hud-border);
+    box-shadow:0 12px 32px rgba(0,0,0,0.22);
+    display:flex;flex-direction:column;align-items:center;gap:10px;
+  }
+  [data-theme="light"] .empty-card{
+    box-shadow:0 10px 28px rgba(15,23,42,0.08),inset 0 1px 0 #ffffff;
+  }
+  .empty-icon{
+    width:46px;height:46px;border-radius:11px;display:grid;place-items:center;
+    background:rgba(6,182,212,0.12);border:1px solid rgba(6,182,212,0.32);color:var(--sonar);
+    margin-bottom:2px;
+  }
+  .empty .big{font-size:14px;font-weight:800;letter-spacing:.05em;text-transform:uppercase;color:var(--text)}
+  .empty-sub{font-size:12px;color:var(--muted);line-height:1.5}
+  .empty-sub b{color:var(--sonar);font-weight:700}
+  .stageHud{
+    position:absolute;top:12px;left:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:60%;
+  }
+  .stageHud .pill{
+    background:var(--hud-bg) !important;backdrop-filter:blur(8px);
+    border:1px solid var(--hud-border) !important;color:var(--text) !important;
+  }
+  .stageCtl{
+    position:absolute;bottom:12px;right:12px;display:flex;gap:6px;align-items:center;height:36px;
+    background:var(--hud-bg) !important;backdrop-filter:blur(10px);
+    border:1px solid var(--hud-border) !important;border-radius:8px !important;padding:0 10px !important;
+    box-shadow:0 6px 20px rgba(0,0,0,0.25);color:var(--text) !important;
+  }
+  [data-theme="light"] .stageCtl{
+    box-shadow:0 6px 18px rgba(15,23,42,0.10);
+  }
+  .stageCtl label{
+    font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;
+    color:var(--muted) !important;margin-left:4px;
+  }
+  #zoomLbl{
+    font-size:11px !important;font-weight:700 !important;min-width:44px;padding:2px 6px;
+    text-align:center;color:var(--sonar) !important;
+    background:var(--panel2);border:1px solid var(--border);border-radius:5px;
+  }
+  .iconbtn{
+    width:24px;height:24px;border:1px solid var(--border2);border-radius:5px;
+    background:var(--panel2);color:var(--text);font-weight:700;font-size:13px;
+    display:grid;place-items:center;transition:all .14s ease;
+  }
+  [data-theme="light"] .iconbtn{
+    background:#f8fafc;border-color:#cbd5e1;color:#0f172a;
+  }
+  .iconbtn:hover{border-color:var(--sonar);color:var(--sonar);background:var(--raise)}
+  .coordreadout{
+    position:absolute;bottom:12px;left:12px;font-family:var(--mono);font-size:11px;font-weight:600;
+    height:36px;display:inline-flex;align-items:center;
+    background:var(--hud-bg) !important;backdrop-filter:blur(10px);
+    border:1px solid var(--hud-border) !important;border-radius:8px !important;
+    padding:0 12px !important;color:var(--text) !important;
+    box-shadow:0 6px 20px rgba(0,0,0,0.25);
+  }
+  [data-theme="light"] .coordreadout{
+    box-shadow:0 6px 18px rgba(15,23,42,0.10);
+  }
+  .coordreadout b{color:var(--sonar);font-weight:700;margin:0 4px}
+
+  /* ---------- previews + export bar ---------- */
+  .bottom{border-top:1px solid var(--border);background:var(--panel)}
+  .previews{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:10px 12px;background:var(--abyss)}
+  .pv{
+    border:1px solid var(--border) !important;border-radius:7px !important;overflow:hidden;
+    background:var(--panel) !important;box-shadow:0 2px 6px rgba(0,0,0,0.12);
+  }
+  [data-theme="light"] .pv{
+    box-shadow:0 1px 3px rgba(15,23,42,0.06);
+  }
+  .pv .lbl{
+    font-size:10px !important;font-weight:700 !important;letter-spacing:.08em !important;
+    text-transform:uppercase;color:var(--text) !important;padding:5px 10px !important;
+    background:var(--panel2);border-bottom:1px solid var(--border) !important;
+    display:flex;align-items:center;justify-content:space-between;
+  }
+  .pv .lbl span:first-child{display:inline-flex;align-items:center;gap:6px}
+  .pv .lbl span:first-child::before{
+    content:"";width:5px;height:5px;border-radius:50%;background:var(--sonar);
+  }
+  .pv .lbl span:last-child{
+    font-size:9.5px;font-weight:600;color:var(--muted) !important;
+    padding:1px 6px;border-radius:4px;background:var(--panel);border:1px solid var(--border);
+  }
+  .pv canvas{
+    display:block;width:100%;height:100px;image-rendering:pixelated;
+    background:var(--canvas-well) !important;
+  }
+  .exportbar{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 12px !important;
+    background:var(--panel);border-top:1px solid var(--border) !important;flex-wrap:nowrap !important;
+    overflow-x:auto;
+  }
+  .stats{display:flex;gap:6px;font-family:var(--mono);font-size:10.5px;color:var(--muted);flex-wrap:nowrap;flex-shrink:0}
+  .stats > span{
+    display:inline-flex;align-items:center;gap:5px;padding:4px 8px;
+    border-radius:5px;background:var(--panel2);border:1px solid var(--border);white-space:nowrap;
+  }
+  .stats > span b{color:var(--text);font-weight:700}
+  .stats .sw{display:inline-block;width:7px;height:7px;border-radius:2px;flex-shrink:0}
+  .exportbtns{margin-left:auto;display:flex;gap:6px;flex-wrap:nowrap;align-items:center;flex-shrink:0}
+  .exportbtns .btn{width:auto;min-height:29px !important;padding:4px 10px !important;font-size:11px !important}
+  .exportbtns #btnStartMission{
+    background:linear-gradient(180deg,rgba(16,185,129,0.22) 0%,rgba(5,150,105,0.10) 100%),#11212B !important;
+    color:#D1FAE5 !important;border:1px solid rgba(52,211,153,0.48) !important;
+    font-weight:700 !important;letter-spacing:.02em !important;
+    box-shadow:inset 0 1px 0 rgba(110,231,183,0.2),0 1px 3px rgba(0,0,0,0.3) !important;
+  }
+  [data-theme="light"] .exportbtns #btnStartMission{
+    background:linear-gradient(180deg,#F2FDF9 0%,#DCFCE7 100%) !important;
+    color:#065F46 !important;border:1px solid #6EE7B7 !important;
+    box-shadow:inset 0 1px 0 #FFFFFF,0 1px 2px rgba(5,150,105,0.08) !important;
+  }
+  .exportbtns #btnStartMission:hover:not(:disabled){
+    background:linear-gradient(180deg,rgba(16,185,129,0.34) 0%,rgba(5,150,105,0.20) 100%),#142B37 !important;
+    border-color:#10B981 !important;color:#FFFFFF !important;
+    box-shadow:inset 0 1px 0 rgba(167,243,208,0.28),0 2px 8px rgba(16,185,129,0.25) !important;
+  }
+  [data-theme="light"] .exportbtns #btnStartMission:hover:not(:disabled){
+    background:linear-gradient(180deg,#D1FAE5 0%,#A7F3D0 100%) !important;
+    border-color:#10B981 !important;color:#064E3B !important;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.8),0 2px 6px rgba(5,150,105,0.16) !important;
+  }
+
+  /* ---------- right side tabs ---------- */
+  .tabs{
+    display:flex;gap:4px;padding:6px 8px;background:var(--abyss) !important;
+    border-bottom:1px solid var(--border) !important;position:sticky;top:0;z-index:5;
+  }
+  [data-theme="light"] .tabs{
+    background:#e2e8f0 !important;border-bottom-color:#cbd5e1 !important;
+  }
+  .tab{
+    flex:1;padding:7px 6px !important;font-size:10.5px !important;font-weight:700 !important;
+    letter-spacing:.05em !important;text-transform:uppercase;
+    color:var(--muted) !important;border:1px solid transparent !important;
+    border-radius:6px !important;text-align:center;transition:all .15s ease;
+  }
+  .tab:hover{color:var(--text) !important;background:var(--panel2)}
+  [data-theme="light"] .tab:hover{color:#0f172a !important;background:rgba(255,255,255,0.65)}
+  .tab.active{
+    color:var(--sonar) !important;background:var(--panel) !important;
+    border-color:var(--border2) !important;
+    box-shadow:0 1px 3px rgba(0,0,0,0.2),inset 0 2px 0 var(--sonar) !important;
+  }
+  [data-theme="light"] .tab.active{
+    color:#0369a1 !important;background:#ffffff !important;border-color:#cbd5e1 !important;
+    box-shadow:0 1px 2px rgba(15,23,42,0.06),inset 0 2px 0 #0284c7 !important;
+  }
+  .tabpane{display:none;padding:12px}
+  .tabpane.active{display:block}
+  .field{margin-bottom:12px}
+  .field > label{
+    font-size:10.5px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;
+    color:var(--muted);margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;
+  }
+  .field > label span{
+    font-family:var(--mono);font-size:10.5px;font-weight:700;color:var(--sonar);
+    text-transform:none;letter-spacing:0;padding:1px 6px;border-radius:4px;
+    background:rgba(6,182,212,0.10);border:1px solid rgba(6,182,212,0.24);
+  }
+  [data-theme="light"] .field > label span{
+    color:#0369a1;background:rgba(2,132,199,0.08);border-color:rgba(2,132,199,0.24);
+  }
+  input[type=text],input[type=number],select{
+    width:100%;padding:7px 9px;background:var(--abyss) !important;
+    border:1px solid var(--border) !important;border-radius:6px !important;
+    font-size:12px;font-family:var(--mono);color:var(--text) !important;
+    transition:border-color .15s ease,box-shadow .15s ease;
+  }
+  [data-theme="light"] input[type=text],[data-theme="light"] input[type=number],[data-theme="light"] select{
+    background:#f8fafc !important;border-color:#cbd5e1 !important;color:#0f172a !important;
+    box-shadow:inset 0 1px 2px rgba(15,23,42,0.03);
+  }
+  input[type=text]:focus,input[type=number]:focus,select:focus{
+    outline:none;border-color:var(--sonar) !important;box-shadow:0 0 0 2px rgba(6,182,212,0.16);
+  }
+  [data-theme="light"] input[type=text]:focus,[data-theme="light"] input[type=number]:focus,[data-theme="light"] select:focus{
+    background:#ffffff !important;border-color:#0284c7 !important;box-shadow:0 0 0 2px rgba(2,132,199,0.16);
+  }
+  /* Custom non-native dropdown in Map Planner */
+  .mp-select-wrap{position:relative;width:100%;user-select:none}
+  .mp-select-native{position:absolute;opacity:0;pointer-events:none;width:0;height:0}
+  .mp-select-trigger{
+    width:100%;min-height:33px;padding:6px 10px;border-radius:6px;
+    background:linear-gradient(180deg,var(--panel2) 0%,var(--abyss) 100%);
+    border:1px solid var(--border2);color:var(--text);
+    font-family:var(--mono);font-size:11.5px;font-weight:600;
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    cursor:pointer;transition:all .15s ease;text-align:left;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,0.05),0 1px 2px rgba(0,0,0,0.2);
+  }
+  [data-theme="light"] .mp-select-trigger{
+    background:linear-gradient(180deg,#ffffff 0%,#f1f5f9 100%);
+    border-color:#cbd5e1;color:#0f172a;
+    box-shadow:inset 0 1px 0 #ffffff,0 1px 2px rgba(15,23,42,0.05);
+  }
+  .mp-select-trigger:hover{border-color:var(--sonar)}
+  .mp-select-wrap.is-open .mp-select-trigger{
+    border-color:var(--sonar);box-shadow:0 0 0 2px rgba(6,182,212,0.18);
+  }
+  .mp-select-val{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mp-select-chev{width:13px;height:13px;color:var(--muted);flex-shrink:0;transition:transform .18s ease}
+  .mp-select-wrap.is-open .mp-select-chev{transform:rotate(180deg);color:var(--sonar)}
+  .mp-select-menu{
+    position:absolute;top:calc(100% + 4px);left:0;right:0;z-index:120;
+    background:var(--panel);border:1px solid var(--border2);border-radius:7px;
+    padding:4px;max-height:200px;overflow-y:auto;display:none;flex-direction:column;gap:2px;
+    box-shadow:0 12px 28px rgba(0,0,0,0.55),0 0 0 1px rgba(56,189,248,0.12);
+  }
+  [data-theme="light"] .mp-select-menu{
+    background:#ffffff;border-color:#94a3b8;
+    box-shadow:0 10px 24px rgba(15,23,42,0.14),0 2px 6px rgba(15,23,42,0.06);
+  }
+  .mp-select-wrap.is-open .mp-select-menu{display:flex}
+  .mp-select-opt{
+    display:flex;align-items:center;justify-content:space-between;gap:8px;
+    padding:6px 9px;border-radius:5px;border:1px solid transparent;
+    font-family:var(--mono);font-size:11.5px;color:var(--text);cursor:pointer;transition:all .12s ease;
+  }
+  .mp-select-opt:hover{background:var(--raise);border-color:var(--border)}
+  [data-theme="light"] .mp-select-opt:hover{background:#f1f5f9;border-color:#cbd5e1}
+  .mp-select-opt.is-selected{
+    background:rgba(6,182,212,0.14);border-color:rgba(6,182,212,0.38);color:var(--sonar);font-weight:700;
+  }
+  [data-theme="light"] .mp-select-opt.is-selected{
+    background:rgba(2,132,199,0.10);border-color:rgba(2,132,199,0.35);color:#0369a1;
+  }
+  .mp-select-opt-dot{width:6px;height:6px;border-radius:50%;background:var(--dim);flex-shrink:0}
+  .mp-select-opt.is-selected .mp-select-opt-dot{background:var(--sonar);box-shadow:0 0 5px var(--sonar)}
+  input[type=range]{
+    width:100%;accent-color:var(--sonar);height:6px;border-radius:999px;
+    background:var(--border);cursor:pointer;margin:4px 0;
+  }
+  input[type=color]{width:100%;height:30px;background:var(--abyss);border:1px solid var(--border);border-radius:6px;cursor:pointer}
+  .twin{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .toggle{
+    display:flex;align-items:center;gap:8px;cursor:pointer;user-select:none;
+    padding:7px 9px;border-radius:6px;background:var(--panel2);border:1px solid var(--border);
+    font-size:11.5px;color:var(--text);
+  }
+  [data-theme="light"] .toggle{
+    background:#f8fafc;border-color:#cbd5e1;color:#0f172a;
+    box-shadow:inset 0 1px 0 #ffffff;
+  }
+  .toggle input{width:15px;height:15px;accent-color:var(--sonar)}
+  .sec{border-top:1px solid var(--border);margin:14px -12px 0;padding:14px 12px 0}
+  .sec h5{
+    font-size:10px !important;font-weight:800 !important;letter-spacing:.12em !important;
+    text-transform:uppercase;color:var(--muted) !important;margin-bottom:10px;
+    display:flex;align-items:center;gap:6px;
+  }
+  .sec h5::before{
+    content:"";width:3px;height:10px;border-radius:2px;
+    background:linear-gradient(180deg,var(--sonar) 0%,var(--sonar-dim) 100%);flex-shrink:0;
+  }
+  .yaml{
+    background:var(--abyss) !important;border:1px solid var(--border) !important;
+    border-radius:6px !important;padding:10px;
+    font-family:var(--mono);font-size:11px;white-space:pre;overflow-x:auto;
+    color:var(--sonar) !important;line-height:1.55;
+  }
+  [data-theme="light"] .yaml{
+    background:#f1f5f9 !important;border-color:#cbd5e1 !important;color:#0f172a !important;
+  }
+  .list{display:flex;flex-direction:column;gap:6px}
+  .item{
+    display:flex;align-items:center;gap:8px;padding:7px 10px;
+    background:var(--panel2);border:1px solid var(--border);border-radius:6px;
+    font-family:var(--mono);font-size:11px;color:var(--text);
+  }
+  [data-theme="light"] .item{
+    background:#f8fafc;border-color:#cbd5e1;color:#0f172a;
+    box-shadow:inset 0 1px 0 #ffffff;
+  }
+  .item b{color:var(--sonar);font-weight:700}
+  .item .dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+  .item .txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .item .x{color:var(--dim);font-size:15px;line-height:1;padding:0 2px}
+  .item .x:hover{color:var(--occ)}
+  .item .mv{color:var(--dim);font-size:12px;padding:0 2px}
+  .item .mv:hover{color:var(--sonar)}
+  .hint{
+    font-size:11px;color:var(--muted);line-height:1.5;
+    padding:8px 10px;border-radius:6px;background:var(--panel2);
+    border:1px solid var(--border);border-left:2.5px solid var(--sonar);
+  }
+  [data-theme="light"] .hint{
+    background:#f8fafc;border-color:#cbd5e1;border-left:2.5px solid #0284c7;color:#475569;
+  }
+  .hint b{color:var(--text);font-weight:700}
+  .zonebar{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-bottom:8px}
+  .zb{
+    padding:7px 4px;border:1px solid var(--border);border-radius:6px;
+    background:var(--panel2);font-size:10.5px;font-weight:600;text-align:center;color:var(--muted);
+    transition:all .14s ease;cursor:pointer;
+  }
+  [data-theme="light"] .zb{
+    background:#f8fafc;border-color:#cbd5e1;color:#475569;
+  }
+  .zb.active{box-shadow:0 0 0 1px currentColor inset;font-weight:700}
+  .zb.nogo.active{color:var(--occ);border-color:var(--occ);background:rgba(239,68,68,0.10)}
+  .zb.go.active{color:var(--free);border-color:var(--free);background:rgba(16,185,129,0.10)}
+  .zb.unk.active{color:var(--unk);border-color:var(--unk);background:rgba(100,116,139,0.12)}
+  .toast{
+    position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:rgba(15,23,42,0.96);border:1px solid var(--border2);border-radius:8px;padding:9px 16px;
+    font-size:12px;font-weight:600;color:#F8FAFC;opacity:0;transition:.22s;pointer-events:none;z-index:150;
+    box-shadow:0 10px 28px rgba(0,0,0,0.5);backdrop-filter:blur(8px);
+  }
+  [data-theme="light"] .toast{
+    background:rgba(255,255,255,0.98);border-color:#94A3B8;color:#0F172A;
+    box-shadow:0 10px 28px rgba(15,23,42,0.16);
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .toast.err{
+    background:rgba(36,12,18,0.96);border-color:#F43F5E;color:#FFE4E6;
+  }
+  [data-theme="light"] .toast.err{
+    background:#FEF2F2;border-color:#EF4444;color:#991B1B;
+    box-shadow:0 10px 28px rgba(220,38,38,0.18);
+  }
+  .spinner{width:13px;height:13px;border:2px solid var(--dim);border-top-color:var(--sonar);border-radius:50%;animation:spin .7s linear infinite;display:inline-block;vertical-align:-2px}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:8px}
+  ::-webkit-scrollbar-track{background:transparent}
+
+  @media (max-width:1024px){
+    .mid{grid-template-columns:1fr}
+    .rail,.side{max-height:240px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+  /* ---------- coord picker modal ---------- */
+  .picker-overlay{
+    position:fixed;inset:0;background:rgba(4,8,16,.76);backdrop-filter:blur(6px);z-index:100;
+    display:grid;place-items:center;
+  }
+  [data-theme="light"] .picker-overlay{
+    background:rgba(15,23,42,.42);
+  }
+  .picker-box{
+    width:min(880px,92vw);height:min(640px,86vh);background:var(--panel);
+    border:1px solid var(--border2);border-radius:12px;overflow:hidden;
+    display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.6);
+  }
+  [data-theme="light"] .picker-box{
+    background:#ffffff;border-color:#94a3b8;
+    box-shadow:0 20px 50px rgba(15,23,42,.22),0 4px 12px rgba(15,23,42,.08);
+  }
+  .picker-head{
+    display:flex;align-items:center;gap:10px;padding:10px 14px;
+    border-bottom:1px solid var(--border);background:var(--panel2);
+  }
+  [data-theme="light"] .picker-head{
+    background:#f8fafc;border-bottom-color:#cbd5e1;
+  }
+  .picker-head b{font-size:12.5px;letter-spacing:.2px;color:var(--text)}
+  .picker-mode{display:flex;gap:6px;margin-left:auto}
+  .seg{padding:5px 12px;border:1px solid var(--border);border-radius:6px;background:var(--panel2);font-size:11.5px;color:var(--muted)}
+  .seg.active{border-color:var(--sonar) !important;color:var(--sonar) !important;font-weight:700 !important}
+  .picker-map{flex:1;min-height:0}
+  .picker-foot{
+    display:flex;align-items:center;justify-content:space-between;gap:10px;
+    padding:10px 14px;border-top:1px solid var(--border);background:var(--panel2);
+  }
+  [data-theme="light"] .picker-foot{
+    background:#f8fafc;border-top-color:#cbd5e1;
+  }
+  .picker-pin{width:16px;height:16px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid #04110f}
+  [data-theme="light"] .picker-pin{border-color:#ffffff;box-shadow:0 2px 5px rgba(15,23,42,.35)}
+  .picker-pin.start{background:var(--start)}
+  .picker-pin.goal{background:var(--goal)}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ===== HEADER / STATUS BAR ===== -->
+  <header class="top">
+    <div class="brand">
+      <span class="glyph">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 3v5m0 8v5M3 12h5m8 0h5"/>
+          <circle cx="12" cy="12" r="2.2" fill="currentColor"/>
+        </svg>
+      </span>
+      <div class="brand-text">AUV&nbsp;GCS <small>MAP-PLAN &middot; ROS2 OCCUPANCY GRID</small></div>
+    </div>
+    <div class="status">
+      <span class="pill" id="stMap">map <b>not loaded</b></span>
+      <span class="pill" id="stSrc">source <b>—</b></span>
+      <span class="pill tool" id="stTool">tool <b>pan</b></span>
+      <span class="pill live" id="stSize">size <b>—</b></span>
+    </div>
+  </header>
+
+  <div class="mid">
+    <!-- ===== LEFT TOOL RAIL ===== -->
+    <aside class="rail">
+      <div class="group">
+        <h4>Import</h4>
+        <div class="row" style="margin-bottom:6px">
+          <button class="btn accent" id="btnFetch">Fetch Map</button>
+        </div>
+        <button class="btn" id="btnUpload">Upload Image…</button>
+        <input type="file" id="fileInput" accept="image/png,image/jpeg,image/jpg,image/tiff" hidden>
+      </div>
+
+      <div class="group">
+        <h4>Navigate</h4>
+        <div class="toolgrid">
+          <button class="tool active" data-tool="pan" title="Pan (drag to move)">
+            <svg viewBox="0 0 24 24"><path d="M5 9l-3 3 3 3M9 5l3-3 3 3M19 9l3 3-3 3M9 19l3 3 3-3M2 12h20M12 2v20"/></svg>Pan</button>
+          <button class="tool" data-tool="crop" title="Drag a rectangle to crop">
+            <svg viewBox="0 0 24 24"><path d="M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14"/></svg>Crop</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h4>Mission</h4>
+        <div class="toolgrid">
+          <button class="tool" data-tool="start"><svg viewBox="0 0 24 24"><circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 0 0-8 8c0 5.25 8 12 8 12s8-6.75 8-12a8 8 0 0 0-8-8z"/></svg>Set Start</button>
+          <button class="tool" data-tool="goal"><svg viewBox="0 0 24 24"><path d="M4 22V4M4 4l12 4-4 5 4 5-12-4"/></svg>Set Goal</button>
+          <button class="tool" data-tool="waypoint"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="9"/></svg>Waypoint</button>
+          <button class="tool" data-tool="polygon"><svg viewBox="0 0 24 24"><path d="M12 2l9 6-3 11H6L3 8z"/></svg>Zone Poly</button>
+        </div>
+      </div>
+
+      <div class="group">
+        <h4>Paint</h4>
+        <div class="toolgrid">
+          <button class="tool" data-tool="obstacle"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2" fill="currentColor" stroke="none"/></svg>Obstacle</button>
+          <button class="tool" data-tool="free"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>Free</button>
+          <button class="tool" data-tool="erase"><svg viewBox="0 0 24 24"><path d="M3 17l6-6 8 8M21 21H7l-4-4 9-9 8 8z"/></svg>Erase</button>
+          <button class="tool" data-tool="fill"><svg viewBox="0 0 24 24"><path d="M19 11l-8-8-8 8 6 6a2 2 0 0 0 3 0zM21 16s-2 3-2 4a2 2 0 0 0 4 0c0-1-2-4-2-4z"/></svg>Flood Fill</button>
+          <button class="tool" data-tool="pick-water"><svg viewBox="0 0 24 24"><path d="M12 3s6 7 6 11a6 6 0 0 1-12 0c0-4 6-11 6-11z"/></svg>Pick Water</button>
+        </div>
+        <div class="field" style="margin-top:10px;margin-bottom:4px">
+          <label>Brush radius <span id="brushVal">6 px</span></label>
+          <input type="range" id="brush" min="1" max="30" value="6">
+        </div>
+      </div>
+
+      <div class="group">
+        <h4>Edits</h4>
+        <div class="row" style="margin-bottom:6px">
+          <button class="btn" id="btnUndo" disabled>↶ Undo</button>
+          <button class="btn" id="btnRedo" disabled>↷ Redo</button>
+        </div>
+        <button class="btn danger" id="btnReset">Reset Edits</button>
+        <button class="btn danger" id="btnClearZones" style="margin-top:6px">Clear Zones</button>
+      </div>
+    </aside>
+
+    <!-- ===== CENTER ===== -->
+    <div class="center">
+      <div class="stage pan" id="stage">
+        <canvas id="stageCanvas"></canvas>
+        <div class="empty" id="empty">
+          <div class="empty-card">
+            <div class="empty-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M12 3v4m0 10v4M3 12h4m10 0h4"/>
+                <circle cx="12" cy="12" r="2.5"/>
+              </svg>
+            </div>
+            <div class="big">No Map Loaded</div>
+            <div class="empty-sub">Enter mission coordinates and click <b>Fetch Map</b>, or <b>Upload Image…</b> from the left toolbar to initialize the ROS2 Occupancy Grid.</div>
+          </div>
+        </div>
+        <div class="stageHud" id="stageHud"></div>
+        <div class="coordreadout" id="coordOut">— ready —</div>
+        <div class="stageCtl">
+          <button class="iconbtn" id="zoomOut">−</button>
+          <span class="mono" id="zoomLbl">100%</span>
+          <button class="iconbtn" id="zoomIn">+</button>
+          <button class="iconbtn" id="zoomFit" title="Fit">⤢</button>
+          <label>overlay</label>
+          <input type="range" id="overlay" min="0" max="100" value="55" style="width:74px">
+        </div>
+      </div>
+
+      <!-- previews + export -->
+      <div class="bottom">
+        <div class="previews">
+          <div class="pv"><div class="lbl"><span>Source</span><span class="mono" id="pvSrcDim">—</span></div><canvas id="pvSource"></canvas></div>
+          <div class="pv"><div class="lbl"><span>Classification</span><span class="mono">HSV / OCC</span></div><canvas id="pvClass"></canvas></div>
+          <div class="pv"><div class="lbl"><span>ROS Grid</span><span class="mono">254/0/205</span></div><canvas id="pvRos"></canvas></div>
+        </div>
+        <div class="exportbar">
+          <div class="stats" id="stats">
+            <span><i class="sw" style="background:var(--free)"></i>free <b id="pFree">0%</b></span>
+            <span><i class="sw" style="background:var(--occ)"></i>occupied <b id="pOcc">0%</b></span>
+            <span><i class="sw" style="background:var(--unk)"></i>unknown <b id="pUnk">0%</b></span>
+          </div>
+          <div class="exportbtns">
+            <button class="btn" id="btnPgm" disabled>PGM</button>
+            <button class="btn" id="btnYaml" disabled>YAML</button>
+            <button class="btn" id="btnZip" disabled>Nav2 Package (.zip)</button>
+            <button class="btn accent" id="btnUploadVehicle" disabled>⇪ Upload to Vehicle</button>
+            <button class="btn accent" id="btnStartMission" disabled>▶ Start Mission</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== RIGHT SIDEBAR ===== -->
+    <aside class="side">
+      <div class="tabs">
+        <button class="tab active" data-tab="conv">Conversion</button>
+        <button class="tab" data-tab="coord">Coordinates</button>
+        <button class="tab" data-tab="meta">Metadata</button>
+      </div>
+
+      <!-- CONVERSION -->
+      <div class="tabpane active" data-pane="conv">
+        <div class="sec" style="border-top:none;margin-top:0;padding-top:0">
+          <h5>Water Detection (HSV)</h5>
+          <div class="field"><label>Hue range <span id="hueVal">170–250°</span></label>
+            <input type="range" id="hueMin" min="0" max="360" value="170">
+            <input type="range" id="hueMax" min="0" max="360" value="250"></div>
+          <div class="field"><label>Saturation min <span id="satVal">12%</span></label>
+            <input type="range" id="satMin" min="0" max="100" value="12"></div>
+          <div class="field"><label>Brightness range <span id="valVal">18–96%</span></label>
+            <input type="range" id="valMin" min="0" max="100" value="18">
+            <input type="range" id="valMax" min="0" max="100" value="96"></div>
+          <div class="hint">Tip: choose <b>Pick Water</b> in the toolbar, then click the sea — sliders auto-tune (±15° hue, ±15% sat, ±20% value).</div>
+        </div>
+
+        <div class="sec">
+          <h5>Obstacle Detection</h5>
+          <div class="field"><label>Black threshold <span id="blackVal">55</span></label>
+            <input type="range" id="black" min="0" max="255" value="55"></div>
+          <div class="field"><label>Gray (low-sat) threshold <span id="grayVal">14%</span></label>
+            <input type="range" id="gray" min="0" max="100" value="14"></div>
+          <label class="toggle"><input type="checkbox" id="unkDefault" checked> Unclassified as <b>Unknown</b> (off = free)</label>
+        </div>
+      </div>
+
+      <!-- COORDINATES -->
+      <div class="tabpane" data-pane="coord">
+        <div class="sec" style="border-top:none;margin-top:0;padding-top:0">
+          <h5>Endpoints (WGS84)</h5>
+          <div class="hint" style="margin-bottom:8px">Start doubles as the mission's GPS anchor - Start Mission calls <b>SetPositionOnMap(latitude, longitude)</b> with this exact point, making it map-frame <b>(0,0)</b>. The map's <b>origin</b> (Metadata tab) is computed relative to it, so moving Start reshapes where the map sits under the vehicle.</div>
+          <button class="btn" id="btnPickCoords" type="button" style="width:100%;margin-bottom:8px">🗺️ Pick Start &amp; Goal on Map</button>
+          <div class="twin">
+            <div class="field"><label>Start lat</label><input type="number" id="startLat" value="19.07998" step="0.0001"></div>
+            <div class="field"><label>Start lon</label><input type="number" id="startLon" value="72.98526" step="0.0001"></div>
+          </div>
+          <div class="twin">
+            <div class="field"><label>Goal lat</label><input type="number" id="goalLat" value="19.07918" step="0.0001"></div>
+            <div class="field"><label>Goal lon</label><input type="number" id="goalLon" value="72.98375" step="0.0001"></div>
+          </div>
+          <div class="hint" style="margin-bottom:8px">Heading the AUV is told it's facing at Start, compass degrees (0=North, 90=East, clockwise) - the map is always north-up, shown as the ▲N marker top-right and as a draggable arrow on the S marker below (grab its tip and drag to rotate). Sent to SetPositionOnMap's yaw at mission start.</div>
+          <div class="field"><label>Heading (° from North)</label><input type="number" id="startHeading" value="0" min="0" max="359" step="1"></div>
+          <div class="field"><label>Mapbox token <span style="color:var(--dim)">optional</span></label>
+            <input type="text" id="mbToken" placeholder="pk.… (blank → ESRI free imagery)"></div>
+          <div class="item" style="justify-content:space-between">
+            <span>Great-circle</span><b id="gcDist">—</b>
+          </div>
+          <div class="field" style="margin-top:8px"><label>Cruise speed (m/s)</label><input type="number" id="cruiseSpeed" value="0.5" step="0.05" min="0.01"></div>
+          <div class="item" style="justify-content:space-between">
+            <span>Est. time to goal</span><b id="etaOut">—</b>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h5>Launch Delay</h5>
+          <div class="hint" style="margin-bottom:8px">Wait time on the AUV itself before the mission does anything else, after Start Mission is clicked — time to disconnect the tether and let it submerge. Start Mission is sent immediately, still tethered; the wait happens on the vehicle, no further link needed.</div>
+          <div class="field"><label>Delay (seconds)</label><input type="number" id="startDelay" value="0" min="0" step="1"></div>
+          <div class="row" id="delayQuick" style="gap:6px">
+            <button class="btn" data-delay="0">0s</button>
+            <button class="btn" data-delay="60">60s</button>
+            <button class="btn" data-delay="120">2m</button>
+            <button class="btn" data-delay="300">5m</button>
+          </div>
+          <div class="item" style="justify-content:space-between;margin-top:8px" id="launchCountdownRow">
+            <span>Countdown</span><b id="launchCountdown" style="color:var(--sonar)">—</b>
+          </div>
+        </div>
+
+        <div class="sec">
+          <h5>Live UTM Readout</h5>
+          <div class="yaml" id="utmOut">hover the map…</div>
+        </div>
+
+        <div class="sec">
+          <h5>Waypoints <span style="color:var(--dim);font-weight:400" id="wpCount"></span></h5>
+          <div class="list" id="wpList"><div class="hint">Use the <b>Waypoint</b> tool and click the map, or add by coordinate below.</div></div>
+          <div class="twin" style="margin-top:8px">
+            <input type="number" id="wpLat" placeholder="lat" step="0.0001">
+            <input type="number" id="wpLon" placeholder="lon" step="0.0001">
+          </div>
+          <button class="btn" id="btnAddWp" style="margin-top:6px">Add waypoint</button>
+        </div>
+
+        <div class="sec">
+          <h5>Vehicle Maps <span style="color:var(--dim);font-weight:400">— fast mission, no upload</span></h5>
+          <div class="hint" style="margin-bottom:8px">Lists maps already saved on the vehicle (sent once via <b>Upload to Vehicle</b>, ideally over a fast Ethernet/manual connection). <b>Start Fast Mission</b> reuses one by name and only sends the small parameters above (start/goal/waypoints/delay/heading) - no pgm/yaml transfer - so a mission can be launched over a slow tether without waiting on a map upload.</div>
+          <div class="twin">
+            <select id="vehicleMapsList"><option value="">— not checked yet —</option></select>
+            <button class="btn" id="btnRefreshVehicleMaps" type="button" title="Refresh list">⟳</button>
+          </div>
+          <button class="btn accent" id="btnStartFastMission" style="margin-top:8px;width:100%" disabled>⚡ Start Fast Mission</button>
+        </div>
+
+        <div class="sec">
+          <h5>Mission File <span style="color:var(--dim);font-weight:400">— JSON only, reuses a saved map</span></h5>
+          <div class="hint" style="margin-bottom:8px">Upload just a small mission JSON (start/goal/waypoints/heading/delay + the <b>name</b> of a map already saved - see Vehicle Maps above and Offline Maps in the Metadata tab) instead of a full map+mission upload. Works over <b>any</b> connection, including a Manual Connection test channel, so this is the flow to use for debugging the upload path without a real tether.</div>
+          <div class="row" style="gap:6px">
+            <button class="btn" id="btnDownloadMissionJson" type="button" style="flex:1">⬇ Download</button>
+            <button class="btn accent" id="btnUploadMissionJson" type="button" style="flex:1">⇪ Upload Mission (JSON)</button>
+          </div>
+          <input type="file" id="missionJsonFile" accept="application/json,.json" hidden>
+        </div>
+      </div>
+
+      <!-- METADATA -->
+      <div class="tabpane" data-pane="meta">
+        <div class="sec" style="border-top:none;margin-top:0;padding-top:0">
+          <h5>Grid</h5>
+          <div class="item" style="justify-content:space-between"><span>Size (px)</span><b id="metaSize">—</b></div>
+          <div class="field" style="margin-top:10px"><label>Image name</label><input type="text" id="mImg" value="map"></div>
+          <div class="field"><label>Resolution (m/px)</label><input type="number" id="mRes" value="0.05" step="0.001"></div>
+          <div class="twin">
+            <div class="field"><label>Origin X (E)</label><input type="number" id="mOx" value="0" step="0.01"></div>
+            <div class="field"><label>Origin Y (N)</label><input type="number" id="mOy" value="0" step="0.01"></div>
+          </div>
+          <div class="twin">
+            <div class="field"><label>Yaw (rad)</label><input type="number" id="mYaw" value="0" step="0.01"></div>
+            <div class="field"><label>Negate</label>
+              <select id="mNeg"><option value="0">0</option><option value="1">1</option></select></div>
+          </div>
+          <div class="twin">
+            <div class="field"><label>Occupied thr</label><input type="number" id="mOcc" value="0.65" step="0.01"></div>
+            <div class="field"><label>Free thr</label><input type="number" id="mFree" value="0.196" step="0.01"></div>
+          </div>
+        </div>
+        <div class="sec">
+          <h5>map.yaml preview</h5>
+          <div class="yaml" id="yamlPrev">—</div>
+        </div>
+        <div class="sec">
+          <h5>Offline Maps</h5>
+          <div class="hint" style="margin-bottom:8px">Saves the current map (pgm + yaml + start/goal/waypoints) to the GCS laptop's own disk - reloading later needs no internet at all, unlike Fetch Map. Useful for areas with no connectivity: generate and save maps in advance while online.</div>
+          <div class="twin">
+            <input type="text" id="saveMapName" placeholder="name to save as">
+            <button class="btn" id="btnSaveMap">💾 Save</button>
+          </div>
+          <div class="twin" style="margin-top:8px">
+            <select id="savedMapsList"><option value="">— saved maps —</option></select>
+            <button class="btn" id="btnLoadMap">📂 Load</button>
+          </div>
+          <button class="btn accent" id="btnSendLocalMap" style="margin-top:6px;width:100%" title="Re-push this saved map to the vehicle without regenerating it">⇪ Send to Vehicle</button>
+          <button class="btn danger" id="btnDeleteMap" style="margin-top:6px;width:100%">Delete selected</button>
+        </div>
+      </div>
+    </aside>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<div class="picker-overlay" id="pickerOverlay" style="display:none">
+  <div class="picker-box">
+    <div class="picker-head">
+      <b>Pick Start &amp; Goal</b>
+      <div class="picker-mode">
+        <button class="btn seg active" id="pmStart" type="button">📍 Start</button>
+        <button class="btn seg" id="pmGoal" type="button">🏁 Goal</button>
+      </div>
+      <button class="iconbtn" id="pickerClose" type="button">✕</button>
+    </div>
+    <div id="pickerMap" class="picker-map"></div>
+    <div class="picker-foot">
+      <span class="mono" id="pickerCoords" style="font-size:11px;color:var(--muted)">—</span>
+      <div style="display:flex;gap:8px">
+        <button class="btn" id="pickerCancel" type="button">Cancel</button>
+        <button class="btn accent" id="pickerApply" type="button">Use these coordinates</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   AUV GCS — single-file prototype
+   Client-side only: fetch / classify / edit / export ROS2 occupancy grid
+   Cell codes used internally:  0 = FREE, 1 = OCCUPIED, 2 = UNKNOWN
+   ROS PGM values:              FREE 254, OCCUPIED 0, UNKNOWN 205
+   ===================================================================== */
+const $ = id => document.getElementById(id);
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+const FREE=0, OCC=1, UNK=2;
+
+/* ---------- global state ---------- */
+const S = {
+  W:0,H:0,                       // working grid dimensions (px)
+  src:null,                      // ImageData of source (working res)
+  cls:null,                      // Uint8Array classification (W*H)
+  ovr:null,                      // Int8Array overrides (-1 none, else cell code)
+  zones:[],                      // {kind:'nogo'|'go'|'unknown', pts:[{x,y}]}
+  start:null, goal:null,         // {x,y,lat,lon}
+  waypoints:[],                  // [{x,y,lat,lon}]
+  geo:null,                      // {mode:'bbox'|'origin', ...}
+  source:'—',                    // label: Mapbox / ESRI / Manual / Mock
+  zoom:1, panX:0, panY:0,
+  tool:'pan', zoneKind:'nogo', brush:6,
+  drag:null,                     // active gesture
+  poly:[],                       // in-progress polygon points
+  sel:null,                      // crop selection rect {x0,y0,x1,y1}
+  undo:[], redo:[],
+};
+
+/* ====================== GEODESY ====================== */
+function haversine(aLat,aLon,bLat,bLon){
+  const R=6371000, d=Math.PI/180;
+  const dLat=(bLat-aLat)*d, dLon=(bLon-aLon)*d;
+  const s=Math.sin(dLat/2)**2 + Math.cos(aLat*d)*Math.cos(bLat*d)*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+// WGS84 lat/lon -> UTM easting/northing (+ zone, hemisphere)
+function latLonToUTM(lat,lon){
+  const a=6378137, f=1/298.257223563, k0=0.9996;
+  const e2=f*(2-f), ep2=e2/(1-e2);
+  const zone=Math.floor((lon+180)/6)+1;
+  const lon0=(zone-1)*6-180+3;
+  const r=Math.PI/180, la=lat*r, lo=lon*r, lo0=lon0*r;
+  const N=a/Math.sqrt(1-e2*Math.sin(la)**2);
+  const T=Math.tan(la)**2, C=ep2*Math.cos(la)**2, A=Math.cos(la)*(lo-lo0);
+  const M=a*((1-e2/4-3*e2*e2/64-5*e2**3/256)*la
+           -(3*e2/8+3*e2*e2/32+45*e2**3/1024)*Math.sin(2*la)
+           +(15*e2*e2/256+45*e2**3/1024)*Math.sin(4*la)
+           -(35*e2**3/3072)*Math.sin(6*la));
+  let E=k0*N*(A+(1-T+C)*A**3/6+(5-18*T+T*T+72*C-58*ep2)*A**5/120)+500000;
+  let Nn=k0*(M+N*Math.tan(la)*(A*A/2+(5-T+9*C+4*C*C)*A**4/24
+           +(61-58*T+T*T+600*C-330*ep2)*A**6/720));
+  if(lat<0) Nn+=10000000;
+  return {e:E, n:Nn, zone, hemi:lat>=0?'N':'S'};
+}
+
+/* ---------- georef helpers: pixel <-> lat/lon ---------- */
+function pxToLatLon(px,py){
+  const g=S.geo; if(!g) return null;
+  if(g.mode==='bbox'){
+    const lon=g.minLon+(px/S.W)*(g.maxLon-g.minLon);
+    const lat=g.maxLat-(py/S.H)*(g.maxLat-g.minLat);
+    return {lat,lon};
+  } else { // origin (bottom-left) + resolution
+    const res=+$('mRes').value||g.res;
+    const east=px*res, north=(S.H-py)*res;
+    const dLat=north/111320, dLon=east/(111320*Math.cos(g.originLat*Math.PI/180));
+    return {lat:g.originLat+dLat, lon:g.originLon+dLon};
+  }
+}
+function latLonToPx(lat,lon){
+  const g=S.geo; if(!g) return null;
+  if(g.mode==='bbox'){
+    const x=(lon-g.minLon)/(g.maxLon-g.minLon)*S.W;
+    const y=(g.maxLat-lat)/(g.maxLat-g.minLat)*S.H;
+    return {x,y};
+  } else {
+    const res=+$('mRes').value||g.res;
+    const dLat=lat-g.originLat, dLon=lon-g.originLon;
+    const north=dLat*111320, east=dLon*111320*Math.cos(g.originLat*Math.PI/180);
+    return {x:east/res, y:S.H-north/res};
+  }
+}
+
+/* ====================== COLOR ====================== */
+function rgbToHsv(r,g,b){
+  r/=255;g/=255;b/=255;
+  const mx=Math.max(r,g,b), mn=Math.min(r,g,b), d=mx-mn;
+  let h=0;
+  if(d){ if(mx===r)h=((g-b)/d)%6; else if(mx===g)h=(b-r)/d+2; else h=(r-g)/d+4; h*=60; if(h<0)h+=360; }
+  return {h, s:mx?d/mx:0, v:mx}; // s,v in 0..1
+}
+
+/* ====================== CLASSIFICATION ====================== */
+function classify(){
+  if(!S.src) return;
+  const d=S.src.data, n=S.W*S.H;
+  if(!S.cls||S.cls.length!==n) S.cls=new Uint8Array(n);
+  const hMin=+$('hueMin').value, hMax=+$('hueMax').value;
+  const sMin=+$('satMin').value/100;
+  const vMin=+$('valMin').value/100, vMax=+$('valMax').value/100;
+  const black=+$('black').value/255;
+  const grayS=+$('gray').value/100;
+  const unkDefault=$('unkDefault').checked;
+  const hueWrap=hMin>hMax;
+  for(let i=0;i<n;i++){
+    const p=i*4; const {h,s,v}=rgbToHsv(d[p],d[p+1],d[p+2]);
+    const hueOk = hueWrap ? (h>=hMin||h<=hMax) : (h>=hMin&&h<=hMax);
+    if(hueOk && s>=sMin && v>=vMin && v<=vMax){ S.cls[i]=FREE; continue; }   // water
+    if(v<=black){ S.cls[i]=OCC; continue; }                                  // dark = obstacle
+    if(s<=grayS){ S.cls[i]=UNK; continue; }                                  // washed-out = unknown
+    S.cls[i]= unkDefault ? UNK : FREE;                                       // leftover
+  }
+}
+
+/* zones rasterised on demand; overrides are persistent */
+function pointInPoly(x,y,pts){
+  let inside=false;
+  for(let i=0,j=pts.length-1;i<pts.length;j=i++){
+    const xi=pts[i].x,yi=pts[i].y,xj=pts[j].x,yj=pts[j].y;
+    if(((yi>y)!==(yj>y)) && (x < (xj-xi)*(y-yi)/(yj-yi)+xi)) inside=!inside;
+  }
+  return inside;
+}
+// final cell: classification < zones < manual overrides (overrides win)
+function finalGrid(){
+  const n=S.W*S.H, out=new Uint8Array(n);
+  out.set(S.cls);
+  if(S.zones.length){
+    // bounding-box accelerated polygon fill
+    for(const z of S.zones){
+      const code=z.kind==='nogo'?OCC:z.kind==='go'?FREE:UNK;
+      let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+      for(const p of z.pts){minX=Math.min(minX,p.x);minY=Math.min(minY,p.y);maxX=Math.max(maxX,p.x);maxY=Math.max(maxY,p.y);}
+      minX=clamp(minX|0,0,S.W-1);maxX=clamp(maxX|0,0,S.W-1);
+      minY=clamp(minY|0,0,S.H-1);maxY=clamp(maxY|0,0,S.H-1);
+      for(let y=minY;y<=maxY;y++) for(let x=minX;x<=maxX;x++)
+        if(pointInPoly(x+0.5,y+0.5,z.pts)) out[y*S.W+x]=code;
+    }
+  }
+  for(let i=0;i<n;i++) if(S.ovr[i]!==-1) out[i]=S.ovr[i];
+  return out;
+}
+
+/* ====================== UNDO / REDO ====================== */
+function snapshot(){
+  S.undo.push({ovr:S.ovr.slice(), zones:JSON.parse(JSON.stringify(S.zones))});
+  if(S.undo.length>40) S.undo.shift();
+  S.redo.length=0; updateUndoBtns();
+}
+function applyState(st){ S.ovr=st.ovr.slice(); S.zones=JSON.parse(JSON.stringify(st.zones)); }
+function undo(){ if(!S.undo.length)return; S.redo.push({ovr:S.ovr.slice(),zones:JSON.parse(JSON.stringify(S.zones))}); applyState(S.undo.pop()); refreshAll(); updateUndoBtns(); }
+function redo(){ if(!S.redo.length)return; S.undo.push({ovr:S.ovr.slice(),zones:JSON.parse(JSON.stringify(S.zones))}); applyState(S.redo.pop()); refreshAll(); updateUndoBtns(); }
+function updateUndoBtns(){ $('btnUndo').disabled=!S.undo.length; $('btnRedo').disabled=!S.redo.length; }
+
+/* ====================== MAP LOADING ====================== */
+function fitZoom(){
+  const st=$('stage'); const r=st.getBoundingClientRect();
+  if(!S.W) return;
+  S.zoom=Math.min(r.width/S.W, r.height/S.H)*0.94;
+  S.panX=(r.width-S.W*S.zoom)/2; S.panY=(r.height-S.H*S.zoom)/2;
+}
+// Build working grids from an ImageBitmap/canvas-able source.
+// bbox-mode maps are sized from real ground distance / TARGET_RES,
+// independently per axis, NOT from the source image's own pixel aspect
+// ratio. Why: ESRI's export (bboxSR=4326/imageSR=4326) returns imagery
+// whose pixel grid is proportional to raw lon/lat DEGREE span - but 1
+// degree of longitude covers cos(latitude) less ground distance than 1
+// degree of latitude. Storing ONE scalar `resolution:` for both axes (as
+// ROS map format requires) on a degree-proportional grid silently
+// over/under-states one axis relative to the other by up to ~(1/cos(lat)-1)
+// - a few percent at low latitudes, more further from the equator - and
+// since that's an absolute-distance error, it grows with the map's
+// physical size. This is what showed up as "start/goal position drifts
+// more on a larger map." Resampling onto a grid sized from real ground
+// meters fixes it regardless of what aspect ratio the source was fetched
+// at (drawImage stretches to fill the new grid, and the bbox it covers
+// doesn't change, so pxToLatLon's linear interpolation stays exact).
+const TARGET_RES = 0.8;   // fixed map resolution (m/px) - kept constant so
+                           // Nav2 costmap/planner tuning behaves the same
+                           // regardless of which map is loaded.
+const MAX_GRID_DIM = 1280; // hard ceiling per axis (tether bandwidth + sane memory use)
+function ingest(srcCanvas, geo, sourceLabel){
+  let w=srcCanvas.width, h=srcCanvas.height;
+  let targetW, targetH;
+  if(geo.mode==='bbox'){
+    const midLat=(geo.minLat+geo.maxLat)/2;
+    const groundW=haversine(midLat,geo.minLon,midLat,geo.maxLon)||1;
+    const groundH=haversine(geo.minLat,(geo.minLon+geo.maxLon)/2,geo.maxLat,(geo.minLon+geo.maxLon)/2)||1;
+    targetW=Math.max(1,Math.round(groundW/TARGET_RES));
+    targetH=Math.max(1,Math.round(groundH/TARGET_RES));
+    const capScale=Math.min(1, MAX_GRID_DIM/Math.max(targetW,targetH));
+    if(capScale<1) toast(`Area too large to hold ${TARGET_RES}m/px within the size cap — this map's resolution will be coarser.`,true);
+    targetW=Math.max(1,Math.round(targetW*capScale));
+    targetH=Math.max(1,Math.round(targetH*capScale));
+  } else {
+    // origin mode (manual upload/crop): no independently-known ground
+    // extent, keep the prior long-side cap behavior.
+    const scale=Math.min(1, MAX_GRID_DIM/Math.max(w,h));
+    targetW=Math.max(1,Math.round(w*scale));
+    targetH=Math.max(1,Math.round(h*scale));
+  }
+  S.W=targetW; S.H=targetH;
+  const c=document.createElement('canvas'); c.width=S.W;c.height=S.H;
+  const cx=c.getContext('2d'); cx.drawImage(srcCanvas,0,0,S.W,S.H);
+  try{ S.src=cx.getImageData(0,0,S.W,S.H); }
+  catch(e){ toast('Image is cross-origin / tainted — using mock map.',true); return mockMap(geo); }
+  S.ovr=new Int8Array(S.W*S.H).fill(-1);
+  S.zones=[]; S.poly=[]; S.sel=null; S.undo=[]; S.redo=[]; updateUndoBtns();
+  S.geo=geo; S.source=sourceLabel;
+  // derive resolution (should land at/near TARGET_RES) + map-frame origin
+  // (relative to Start, see updateMapOrigin) for the metadata panel
+  deriveGeoref();
+  classify(); fitZoom(); placeEndpoints(); refreshAll();
+  $('empty').style.display='none';
+  ['btnPgm','btnYaml','btnZip','btnUploadVehicle','btnStartMission'].forEach(b=>$(b).disabled=false);
+  setStatus();
+}
+// Ground sample distance (m/px) + the yaml `origin:` (bottom-left pixel's
+// ENU offset, in meters, FROM the Start point). Deliberately NOT UTM: Start
+// Mission calls SetPositionOnMap(latitude=startLat, longitude=startLon),
+// which anchors the AUV's live "map" frame to a local ENU plane centered on
+// THAT GPS fix - so the yaml's origin must be expressed in that same
+// Start-relative frame, or the raster winds up sitting however many
+// hundred kilometers away that UTM easting/northing happened to be from
+// (0,0), which is exactly why maps were showing up wildly mis-scaled.
+function deriveGeoref(){
+  const g=S.geo;
+  if(g.mode==='bbox'){
+    const midLat=(g.minLat+g.maxLat)/2;
+    const groundW=haversine(midLat,g.minLon,midLat,g.maxLon);
+    const res=groundW/S.W;
+    $('mRes').value=res.toFixed(4);
+    g.res=res;
+  }
+  updateMapOrigin();
+}
+function updateMapOrigin(){
+  if(!S.geo) return;
+  const anchorLat=+$('startLat').value, anchorLon=+$('startLon').value;
+  if(Number.isNaN(anchorLat)||Number.isNaN(anchorLon)) return;
+  const bl=pxToLatLon(0,S.H); // bottom-left pixel = ROS map_server's origin pixel
+  if(!bl) return;
+  const dLat=bl.lat-anchorLat, dLon=bl.lon-anchorLon;
+  const north=dLat*111320, east=dLon*111320*Math.cos(anchorLat*Math.PI/180);
+  $('mOx').value=east.toFixed(2);
+  $('mOy').value=north.toFixed(2);
+  updateMeta();
+}
+function placeEndpoints(){
+  const sLat=+$('startLat').value,sLon=+$('startLon').value;
+  const gLat=+$('goalLat').value,gLon=+$('goalLon').value;
+  if(S.geo){
+    const sp=latLonToPx(sLat,sLon), gp=latLonToPx(gLat,gLon);
+    if(sp&&sp.x>=0&&sp.x<=S.W&&sp.y>=0&&sp.y<=S.H) S.start={x:sp.x,y:sp.y,lat:sLat,lon:sLon};
+    if(gp&&gp.x>=0&&gp.x<=S.W&&gp.y>=0&&gp.y<=S.H) S.goal={x:gp.x,y:gp.y,lat:gLat,lon:gLon};
+    // re-anchor waypoints to the new map's pixel grid using their lat/lon
+    S.waypoints.forEach(w=>{ if(w.lat!=null){ const p=latLonToPx(w.lat,w.lon); if(p){w.x=p.x;w.y=p.y;} } });
+  }
+  $('gcDist').textContent=fmtDist(haversine(sLat,sLon,gLat,gLon));
+  updateEta();
+}
+function fmtDist(m){ return m>=1000?(m/1000).toFixed(2)+' km':m.toFixed(0)+' m'; }
+function fmtTime(s){
+  if(!isFinite(s)||s<0) return '—';
+  if(s<60) return Math.round(s)+' s';
+  const m=Math.floor(s/60), rem=Math.round(s%60);
+  if(m<60) return `${m}m ${rem}s`;
+  return `${Math.floor(m/60)}h ${m%60}m`;
+}
+// Approximate only: counts down from when Start Mission's response came
+// back, client-side - the ACTUAL wait timer runs on the vehicle (see
+// mission.xml's LaunchGracePeriod Delay), which this has no live feedback
+// channel into. Close enough to tell the operator roughly when to expect
+// launch; not synced to the vehicle's own clock (tether latency, drift).
+let launchCountdownTimer=null;
+function startLaunchCountdown(seconds){
+  if(launchCountdownTimer){ clearInterval(launchCountdownTimer); launchCountdownTimer=null; }
+  const el=$('launchCountdown');
+  if(!el) return;
+  if(seconds<=0){ el.textContent='No delay — launching now.'; return; }
+  let remaining=Math.ceil(seconds);
+  const tick=()=>{
+    if(remaining<=0){
+      el.textContent='Launching now…';
+      clearInterval(launchCountdownTimer); launchCountdownTimer=null;
+      return;
+    }
+    el.textContent=`~${fmtTime(remaining)} until launch`;
+    remaining--;
+  };
+  tick();
+  launchCountdownTimer=setInterval(tick,1000);
+}
+// Rough pre-mission estimate only: straight-line great-circle distance /
+// a user-set cruise speed - not live telemetry, doesn't account for actual
+// path curvature, currents, or obstacle avoidance detours.
+function updateEta(){
+  const sLat=+$('startLat').value,sLon=+$('startLon').value;
+  const gLat=+$('goalLat').value,gLon=+$('goalLon').value;
+  const speed=+$('cruiseSpeed').value;
+  const dist=haversine(sLat,sLon,gLat,gLon);
+  const el=$('etaOut');
+  if(!el) return;
+  el.textContent=(speed>0)?fmtTime(dist/speed):'—';
+}
+
+// Synthetic fallback map (procedural water/land) so the tool never dead-ends
+function mockMap(geo){
+  const W=720,H=520;
+  const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
+  x.fillStyle='#15445f';x.fillRect(0,0,W,H);                       // open water
+  const g=x.createLinearGradient(0,0,W,H);
+  g.addColorStop(0,'#1b5570');g.addColorStop(1,'#0e3346');x.fillStyle=g;x.fillRect(0,0,W,H);
+  // landmass blobs (dark/olive = obstacle-ish)
+  function blob(cx,cy,r,col){x.fillStyle=col;x.beginPath();
+    for(let a=0;a<=Math.PI*2;a+=0.25){const rr=r*(0.7+0.3*Math.sin(a*3+cx));x.lineTo(cx+Math.cos(a)*rr,cy+Math.sin(a)*rr);}x.closePath();x.fill();}
+  blob(150,140,90,'#3c3a24');blob(560,400,120,'#403c22');blob(330,300,30,'#2e2c1c');
+  // sandy shoreline noise
+  for(let i=0;i<2200;i++){const px=Math.random()*W,py=Math.random()*H;
+    x.fillStyle=`rgba(${180+Math.random()*40|0},${170+Math.random()*40|0},${130|0},${Math.random()*0.25})`;
+    x.fillRect(px,py,1.5,1.5);}
+  ingest(c, geo||{mode:'bbox',minLat:25.18,maxLat:25.22,minLon:55.26,maxLon:55.29}, 'Mock');
+}
+
+// decode an object-URL / data-URL into an Image (used by uploads + fetchImage)
+async function loadImage(url,cross){
+  return new Promise((res,rej)=>{
+    const img=new Image(); if(cross)img.crossOrigin='anonymous';
+    img.onload=()=>res(img); img.onerror=()=>rej(new Error('image decode failed'));
+    img.src=url;
+  });
+}
+// fetch a tile via fetch()->blob: surfaces the REAL error and avoids canvas taint
+async function fetchImage(url){
+  let r;
+  try{ r=await fetch(url,{mode:'cors'}); }
+  catch(err){ throw new Error('request blocked (CORS, CSP sandbox, or offline)'); }
+  if(!r.ok){
+    let msg=`HTTP ${r.status}`;
+    try{ const j=await r.clone().json(); if(j&&j.message) msg+=` — ${j.message}`; }catch(_){}
+    throw new Error(msg);
+  }
+  const obj=URL.createObjectURL(await r.blob());
+  try{ return await loadImage(obj,false); }
+  finally{ setTimeout(()=>URL.revokeObjectURL(obj),5000); }
+}
+// pick a pixel size that keeps pixels ~square for the given aspect (H/W), capped at 1280
+function sizeFor(aspect){
+  const CAP=1280; let W=1024, H=Math.round(W*aspect);
+  if(H>CAP){ H=CAP; W=Math.round(H/aspect); }
+  if(W>CAP){ W=CAP; H=Math.round(W*aspect); }
+  return {W:clamp(W,1,CAP), H:clamp(H,1,CAP)};
+}
+async function fetchMap(){
+  const sLat=+$('startLat').value,sLon=+$('startLon').value;
+  const gLat=+$('goalLat').value,gLon=+$('goalLon').value;
+  if([sLat,sLon,gLat,gLon].some(v=>Number.isNaN(v))){toast('Enter valid start & goal coordinates.',true);return;}
+  // bbox spans start, goal AND every georeferenced waypoint
+  const pts=[{lat:sLat,lon:sLon},{lat:gLat,lon:gLon}];
+  for(const w of S.waypoints) if(w.lat!=null && !Number.isNaN(w.lat)) pts.push({lat:w.lat,lon:w.lon});
+  let minLat=Math.min(...pts.map(p=>p.lat)), maxLat=Math.max(...pts.map(p=>p.lat));
+  let minLon=Math.min(...pts.map(p=>p.lon)), maxLon=Math.max(...pts.map(p=>p.lon));
+  // generous margin (25% of span) so the route sits well inside the frame
+  const padLat=(maxLat-minLat)*0.25, padLon=(maxLon-minLon)*0.25;
+  minLat-=padLat;maxLat+=padLat;minLon-=padLon;maxLon+=padLon;
+  // floor the extent so close-together points still yield a properly sized map (~0.006° ≈ 650 m)
+  const MINSPAN=0.006;
+  if(maxLat-minLat<MINSPAN){const c=(minLat+maxLat)/2;minLat=c-MINSPAN/2;maxLat=c+MINSPAN/2;}
+  if(maxLon-minLon<MINSPAN){const c=(minLon+maxLon)/2;minLon=c-MINSPAN/2;maxLon=c+MINSPAN/2;}
+  const geo={mode:'bbox',minLat,maxLat,minLon,maxLon};
+  const token=$('mbToken').value.trim();
+
+  // aspect ratios: Mapbox renders in Mercator (ground aspect); ESRI 4326 export is degree-linear
+  const midLat=(minLat+maxLat)/2;
+  const gW=haversine(midLat,minLon,midLat,maxLon)||1;
+  const gH=haversine(minLat,(minLon+maxLon)/2,maxLat,(minLon+maxLon)/2)||1;
+  const degAspect=(maxLat-minLat)/((maxLon-minLon)||1e-9);
+
+  setFetching(true);
+  try{
+    let img,label,url;
+    if(token){
+      const {W,H}=sizeFor(gH/gW);
+      url=`https://api.mapbox.com/styles/v1/mapbox/satellite-v9/static/`+
+          `[${minLon},${minLat},${maxLon},${maxLat}]/${W}x${H}`+
+          `?access_token=${encodeURIComponent(token)}`;
+      img=await fetchImage(url); label='Mapbox';
+    } else {
+      const {W,H}=sizeFor(degAspect);
+      url=`https://server.arcgisonline.com/arcgis/rest/services/World_Imagery/MapServer/export`+
+          `?bbox=${minLon},${minLat},${maxLon},${maxLat}&bboxSR=4326&imageSR=4326`+
+          `&size=${W},${H}&format=png&transparent=false&f=image`;
+      img=await fetchImage(url); label='ESRI';
+    }
+    const c=document.createElement('canvas');
+    c.width=img.naturalWidth; c.height=img.naturalHeight;
+    c.getContext('2d').drawImage(img,0,0);
+    ingest(c,geo,label);
+    toast(`Fetched ${label} imagery (${c.width}×${c.height}).`);
+  }catch(e){
+    toast(`Fetch failed: ${e.message} — using mock map.`,true);
+    mockMap(geo);
+  }finally{ setFetching(false); }
+}
+function setFetching(on){
+  const b=$('btnFetch');
+  b.disabled=on; b.innerHTML=on?'<span class="spinner"></span> Fetching…':'Fetch Map';
+}
+
+/* manual upload */
+$('btnUpload').onclick=()=>$('fileInput').click();
+$('fileInput').onchange=async e=>{
+  const f=e.target.files[0]; if(!f) return;
+  if(/tiff?/.test(f.type)){toast('TIFF preview may not decode in-browser; PNG/JPG recommended.',true);}
+  const url=URL.createObjectURL(f);
+  try{
+    const img=await loadImage(url,false);
+    const c=document.createElement('canvas');c.width=img.naturalWidth;c.height=img.naturalHeight;
+    c.getContext('2d').drawImage(img,0,0);
+    // manual georef: origin = bottom-left, user edits res + origin lat/lon in metadata
+    const geo={mode:'origin', originLat:+$('startLat').value||0, originLon:+$('startLon').value||0, res:+$('mRes').value||0.05};
+    ingest(c,geo,'Manual');
+    toast('Image loaded. Set origin lat/lon & resolution in Metadata.');
+  }catch(err){ toast('Could not decode image.',true); }
+  finally{ URL.revokeObjectURL(url); e.target.value=''; }
+};
+
+/* ====================== RENDERING ====================== */
+const stage=$('stage'), cv=$('stageCanvas'), cvx=cv.getContext('2d');
+function resizeStage(){
+  const r=stage.getBoundingClientRect(), dpr=devicePixelRatio||1;
+  cv.width=r.width*dpr; cv.height=r.height*dpr; cvx.setTransform(dpr,0,0,dpr,0,0);
+  render();
+}
+const colorFor=code=> code===FREE?[61,220,132]: code===OCC?[255,93,93]:[126,148,163];
+
+function buildOverlayCanvas(){
+  const fg=finalGrid();
+  const oc=document.createElement('canvas');oc.width=S.W;oc.height=S.H;
+  const od=oc.getContext('2d').createImageData(S.W,S.H);
+  for(let i=0;i<fg.length;i++){const c=colorFor(fg[i]);const p=i*4;
+    od.data[p]=c[0];od.data[p+1]=c[1];od.data[p+2]=c[2];od.data[p+3]=255;}
+  oc.getContext('2d').putImageData(od,0,0);
+  return oc;
+}
+let overlayCache=null, overlayDirty=true;
+function markDirty(){overlayDirty=true;}
+
+function render(){
+  const r=stage.getBoundingClientRect();
+  cvx.clearRect(0,0,r.width,r.height);
+  if(!S.src){ drawNorthIndicator(r); return; }
+  cvx.imageSmoothingEnabled=false;
+  // source
+  const sc=document.createElement('canvas');sc.width=S.W;sc.height=S.H;sc.getContext('2d').putImageData(S.src,0,0);
+  cvx.save();cvx.translate(S.panX,S.panY);cvx.scale(S.zoom,S.zoom);
+  cvx.drawImage(sc,0,0);
+  // overlay
+  if(overlayDirty){overlayCache=buildOverlayCanvas();overlayDirty=false;}
+  cvx.globalAlpha=+$('overlay').value/100; cvx.drawImage(overlayCache,0,0); cvx.globalAlpha=1;
+  cvx.restore();
+
+  // vector layer (markers / zones / polygon / selection) in screen space
+  const T=(x,y)=>[S.panX+x*S.zoom, S.panY+y*S.zoom];
+  // zones
+  for(const z of S.zones) drawPoly(z.pts, z.kind==='nogo'?'#ff5d5d':z.kind==='go'?'#3ddc84':'#7e94a3', T);
+  if(S.poly.length) drawPoly(S.poly, zoneColor(S.zoneKind), T, true);
+  // crop selection
+  if(S.sel){const[a,b]=T(S.sel.x0,S.sel.y0),[c,d]=T(S.sel.x1,S.sel.y1);
+    cvx.strokeStyle='#2dd4bf';cvx.setLineDash([6,4]);cvx.lineWidth=1.5;
+    cvx.strokeRect(a,b,c-a,d-b);cvx.setLineDash([]);
+    cvx.fillStyle='rgba(45,212,191,.08)';cvx.fillRect(a,b,c-a,d-b);}
+  // waypoints + route
+  if(S.start&&S.goal){
+    const[sx,sy]=T(S.start.x,S.start.y),[gx,gy]=T(S.goal.x,S.goal.y);
+    cvx.strokeStyle='rgba(45,212,191,.6)';cvx.setLineDash([4,4]);cvx.lineWidth=1.5;
+    cvx.beginPath();cvx.moveTo(sx,sy);
+    for(const w of S.waypoints){const[wx,wy]=T(w.x,w.y);cvx.lineTo(wx,wy);}
+    cvx.lineTo(gx,gy);cvx.stroke();cvx.setLineDash([]);
+  }
+  S.waypoints.forEach((w,i)=>{const[x,y]=T(w.x,w.y);marker(x,y,'#c678ff',String(i+1));});
+  if(S.start){
+    const[x,y]=T(S.start.x,S.start.y);
+    drawHeadingArrow();
+    marker(x,y,'#4ea3ff','S');
+  }
+  if(S.goal){const[x,y]=T(S.goal.x,S.goal.y);marker(x,y,'#ffb000','G');}
+  drawNorthIndicator(r);
+}
+// Compass heading (0=N, 90=E, clockwise) -> screen-space unit vector. The
+// map image is north-up by construction (pxToLatLon's bbox-mode math has
+// py=0 -> maxLat), so "up" on screen IS north - this is a direct trig
+// mapping, not an approximation.
+function headingToScreenVec(compassDeg){
+  const r=compassDeg*Math.PI/180;
+  return {dx:Math.sin(r), dy:-Math.cos(r)};
+}
+function drawHeadingArrow(){
+  const hg=headingArrowGeom(); if(!hg)return;
+  const {sx:x,sy:y,tx:ex,ty:ey}=hg;
+  cvx.save();
+  cvx.strokeStyle='#4ea3ff';cvx.fillStyle='#4ea3ff';cvx.lineWidth=2.5;
+  cvx.beginPath();cvx.moveTo(x,y);cvx.lineTo(ex,ey);cvx.stroke();
+  const ah=Math.atan2(ey-y,ex-x);
+  cvx.beginPath();
+  cvx.moveTo(ex,ey);
+  cvx.lineTo(ex-9*Math.cos(ah-0.4),ey-9*Math.sin(ah-0.4));
+  cvx.lineTo(ex-9*Math.cos(ah+0.4),ey-9*Math.sin(ah+0.4));
+  cvx.closePath();cvx.fill();
+  // drag handle - small ring at the tip, visually confirming it's grabbable
+  cvx.beginPath();cvx.arc(ex,ey,6,0,7);cvx.strokeStyle='rgba(78,163,255,.6)';cvx.lineWidth=1.5;cvx.stroke();
+  cvx.restore();
+}
+// Fixed screen-space compass rose (top-right of the stage) - the map is
+// always north-up, so this is just "up", but shown explicitly per user
+// request rather than left implicit.
+function drawNorthIndicator(r){
+  const cx=r.width-38, cy=48;
+  const isLight=document.documentElement.getAttribute('data-theme')==='light';
+  cvx.save();
+  cvx.fillStyle=isLight?'rgba(255,255,255,0.92)':'rgba(11,19,34,0.90)';
+  cvx.strokeStyle=isLight?'#cbd5e1':'rgba(56,189,248,0.32)';
+  cvx.lineWidth=1.2;
+  cvx.beginPath();cvx.arc(cx,cy,22,0,7);cvx.fill();cvx.stroke();
+  const arrowCol=isLight?'#0284c7':'#06b6d4';
+  cvx.strokeStyle=arrowCol;cvx.fillStyle=arrowCol;cvx.lineWidth=2;
+  cvx.beginPath();cvx.moveTo(cx,cy+13);cvx.lineTo(cx,cy-13);cvx.stroke();
+  cvx.beginPath();cvx.moveTo(cx,cy-15);cvx.lineTo(cx-5.5,cy-5.5);cvx.lineTo(cx+5.5,cy-5.5);cvx.closePath();cvx.fill();
+  cvx.fillStyle=isLight?'#0f172a':'#e2ecf7';
+  cvx.font='bold 11px '+getComputedStyle(document.body).fontFamily;
+  cvx.textAlign='center';cvx.textBaseline='middle';cvx.fillText('N',cx,cy-28);
+  cvx.restore();
+}
+new MutationObserver(()=>render()).observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
+function zoneColor(k){return k==='nogo'?'#ff5d5d':k==='go'?'#3ddc84':'#7e94a3';}
+function drawPoly(pts,col,T,open){
+  if(!pts.length)return;cvx.strokeStyle=col;cvx.lineWidth=1.6;
+  cvx.fillStyle=col+'22';cvx.beginPath();
+  pts.forEach((p,i)=>{const[x,y]=T(p.x,p.y);i?cvx.lineTo(x,y):cvx.moveTo(x,y);});
+  if(!open)cvx.closePath();cvx.fill();cvx.stroke();
+  if(open)pts.forEach(p=>{const[x,y]=T(p.x,p.y);cvx.fillStyle=col;cvx.beginPath();cvx.arc(x,y,3,0,7);cvx.fill();});
+}
+function marker(x,y,col,txt){
+  cvx.fillStyle=col;cvx.strokeStyle='#04110f';cvx.lineWidth=2;
+  cvx.beginPath();cvx.arc(x,y,9,0,7);cvx.fill();cvx.stroke();
+  cvx.fillStyle='#04110f';cvx.font='bold 10px '+getComputedStyle(document.body).fontFamily;
+  cvx.textAlign='center';cvx.textBaseline='middle';cvx.fillText(txt,x,y);
+}
+
+/* ====================== PREVIEWS + STATS ====================== */
+function drawPreview(canvas, paint){
+  if(!S.W)return; canvas.width=S.W;canvas.height=S.H;
+  const ctx=canvas.getContext('2d'); const im=ctx.createImageData(S.W,S.H); paint(im.data); ctx.putImageData(im,0,0);
+}
+function refreshPreviews(){
+  drawPreview($('pvSource'),d=>d.set(S.src.data));
+  const fg=finalGrid();
+  drawPreview($('pvClass'),d=>{for(let i=0;i<fg.length;i++){const c=colorFor(fg[i]);const p=i*4;d[p]=c[0];d[p+1]=c[1];d[p+2]=c[2];d[p+3]=255;}});
+  drawPreview($('pvRos'),d=>{for(let i=0;i<fg.length;i++){const v=fg[i]===FREE?254:fg[i]===OCC?0:205;const p=i*4;d[p]=d[p+1]=d[p+2]=v;d[p+3]=255;}});
+  $('pvSrcDim').textContent=`${S.W}×${S.H}`;
+  // stats
+  let f=0,o=0,u=0;for(let i=0;i<fg.length;i++){fg[i]===FREE?f++:fg[i]===OCC?o++:u++;}
+  const t=fg.length||1;
+  $('pFree').textContent=(f/t*100).toFixed(1)+'%';
+  $('pOcc').textContent=(o/t*100).toFixed(1)+'%';
+  $('pUnk').textContent=(u/t*100).toFixed(1)+'%';
+}
+// updateMapOrigin() lives here too (not just on startLat/startLon's native
+// 'change' listener) because Start can also move via clicking the map (the
+// 'start' tool) or programmatic syncEndpointInputs() - neither of which
+// fires a DOM 'change' event on the input fields. Without this, origin:
+// stayed anchored to whatever Start was when the map first loaded, while
+// SetPositionOnMap/SetGoalPose (which read the CURRENT Start/Goal fields)
+// anchor to wherever they actually are now - the map raster and the AUV's
+// real position would silently disagree the moment Start moved by any
+// means other than typing new numbers into the field directly.
+function refreshAll(){ markDirty(); render(); refreshPreviews(); renderWaypoints(); updateMeta(); if(S.geo)updateMapOrigin(); }
+
+/* ====================== INTERACTION ====================== */
+function evtToImg(e){
+  const r=cv.getBoundingClientRect();
+  const sx=e.clientX-r.left, sy=e.clientY-r.top;
+  return {x:(sx-S.panX)/S.zoom, y:(sy-S.panY)/S.zoom, sx,sy};
+}
+function paintAt(px,py,code){
+  const rad=S.brush, r2=rad*rad;
+  const x0=clamp((px-rad)|0,0,S.W-1),x1=clamp((px+rad)|0,0,S.W-1);
+  const y0=clamp((py-rad)|0,0,S.H-1),y1=clamp((py+rad)|0,0,S.H-1);
+  for(let y=y0;y<=y1;y++)for(let x=x0;x<=x1;x++){
+    const dx=x-px,dy=y-py; if(dx*dx+dy*dy<=r2) S.ovr[y*S.W+x]=code;
+  }
+}
+function floodFill(px,py,code){
+  px|=0;py|=0; if(px<0||py<0||px>=S.W||py>=S.H)return;
+  const fg=finalGrid(); const target=fg[py*S.W+px]; if(target===code)return;
+  const st=[[px,py]], seen=new Uint8Array(S.W*S.H);
+  while(st.length){
+    const[x,y]=st.pop(); if(x<0||y<0||x>=S.W||y>=S.H)continue;
+    const i=y*S.W+x; if(seen[i]||fg[i]!==target)continue; seen[i]=1; S.ovr[i]=code;
+    st.push([x+1,y],[x-1,y],[x,y+1],[x,y-1]);
+  }
+}
+const toolCode={obstacle:OCC,free:FREE,erase:-1};
+
+// Heading arrow tip, in screen space - shared by drawHeadingArrow (render)
+// and the drag hit-test/update below, so both agree on where the handle is.
+function headingArrowGeom(){
+  if(!S.start) return null;
+  const T=(x,y)=>[S.panX+x*S.zoom, S.panY+y*S.zoom];
+  const [sx,sy]=T(S.start.x,S.start.y);
+  const {dx,dy}=headingToScreenVec(+$('startHeading').value||0);
+  return {sx,sy,tx:sx+dx*34,ty:sy+dy*34};
+}
+stage.addEventListener('pointerdown',e=>{
+  if(!S.src && S.tool!=='pan')return;
+  const m=evtToImg(e);
+  // Heading arrow tip is a draggable handle regardless of the active tool -
+  // it's a small always-available control, not a toolbar mode.
+  const hg=headingArrowGeom();
+  if(hg && Math.hypot(m.sx-hg.tx,m.sy-hg.ty)<=14){
+    stage.classList.add('dragging'); cv.setPointerCapture(e.pointerId);
+    S.drag={kind:'heading'};
+    return;
+  }
+  stage.classList.add('dragging'); cv.setPointerCapture(e.pointerId);
+  switch(S.tool){
+    case 'pan': S.drag={kind:'pan',sx:e.clientX,sy:e.clientY,ox:S.panX,oy:S.panY};break;
+    case 'crop': S.drag={kind:'crop'};S.sel={x0:m.x,y0:m.y,x1:m.x,y1:m.y};break;
+    case 'obstacle':case 'free':case 'erase':
+      snapshot();S.drag={kind:'paint',code:toolCode[S.tool]};paintAt(m.x,m.y,S.drag.code);refreshAll();break;
+    case 'fill': snapshot();floodFill(m.x,m.y, S.zoneKind==='go'?FREE:OCC); /*fill uses obstacle by default*/ break;
+    case 'start': S.start={x:m.x,y:m.y,...orNull(pxToLatLon(m.x,m.y))};syncEndpointInputs();refreshAll();break;
+    case 'goal': S.goal={x:m.x,y:m.y,...orNull(pxToLatLon(m.x,m.y))};syncEndpointInputs();refreshAll();break;
+    case 'waypoint':{const ll=pxToLatLon(m.x,m.y);S.waypoints.push({x:m.x,y:m.y,lat:ll?ll.lat:null,lon:ll?ll.lon:null});refreshAll();}break;
+    case 'polygon': S.poly.push({x:m.x,y:m.y});render();break;
+    case 'pick-water': pickWater(m.x,m.y);break;
+  }
+  if(S.tool==='fill'){refreshAll();}
+});
+function orNull(o){return o||{lat:null,lon:null};}
+stage.addEventListener('pointermove',e=>{
+  const m=evtToImg(e); updateReadout(m.x,m.y);
+  if(!S.drag)return;
+  if(S.drag.kind==='pan'){S.panX=S.drag.ox+(e.clientX-S.drag.sx);S.panY=S.drag.oy+(e.clientY-S.drag.sy);render();}
+  else if(S.drag.kind==='crop'){S.sel.x1=m.x;S.sel.y1=m.y;render();}
+  else if(S.drag.kind==='paint'){paintAt(m.x,m.y,S.drag.code);refreshAll();}
+  else if(S.drag.kind==='heading'){
+    const hg=headingArrowGeom(); if(!hg)return;
+    let deg=Math.atan2(m.sx-hg.sx, -(m.sy-hg.sy))*180/Math.PI;
+    if(deg<0) deg+=360;
+    $('startHeading').value=Math.round(deg);
+    render();
+  }
+});
+window.addEventListener('pointerup',()=>{
+  stage.classList.remove('dragging');
+  if(S.drag&&S.drag.kind==='crop'&&S.sel){applyCrop();}
+  S.drag=null;
+});
+stage.addEventListener('wheel',e=>{
+  if(!S.src)return; e.preventDefault();
+  const r=cv.getBoundingClientRect(),mx=e.clientX-r.left,my=e.clientY-r.top;
+  const f=e.deltaY<0?1.12:1/1.12, nz=clamp(S.zoom*f,0.05,40);
+  S.panX=mx-(mx-S.panX)*(nz/S.zoom); S.panY=my-(my-S.panY)*(nz/S.zoom); S.zoom=nz;
+  $('zoomLbl').textContent=Math.round(S.zoom*100)+'%'; render();
+},{passive:false});
+stage.addEventListener('dblclick',()=>{ // finish polygon
+  if(S.tool==='polygon'&&S.poly.length>=3){
+    snapshot(); S.zones.push({kind:S.zoneKind,pts:S.poly.slice()}); S.poly=[]; refreshAll();
+    toast(`${S.zoneKind} zone added.`);
+  }
+});
+
+function updateReadout(x,y){
+  if(!S.geo||x<0||y<0||x>S.W||y>S.H){$('coordOut').textContent='— outside map —';return;}
+  const ll=pxToLatLon(x,y); if(!ll)return;
+  const u=latLonToUTM(ll.lat,ll.lon);
+  $('coordOut').innerHTML=`px <b>${x|0},${y|0}</b> &nbsp; ${ll.lat.toFixed(5)}, ${ll.lon.toFixed(5)}`;
+  $('utmOut').textContent=
+`lat   ${ll.lat.toFixed(6)}
+lon   ${ll.lon.toFixed(6)}
+zone  ${u.zone}${u.hemi}
+E     ${u.e.toFixed(2)} m
+N     ${u.n.toFixed(2)} m`;
+}
+
+function pickWater(px,py){
+  px=clamp(px|0,0,S.W-1);py=clamp(py|0,0,S.H-1);
+  const i=(py*S.W+px)*4, d=S.src.data;
+  const {h,s,v}=rgbToHsv(d[i],d[i+1],d[i+2]);
+  $('hueMin').value=clamp(h-15,0,360)|0; $('hueMax').value=clamp(h+15,0,360)|0;
+  $('satMin').value=clamp(s*100-15,0,100)|0;
+  $('valMin').value=clamp(v*100-20,0,100)|0; $('valMax').value=clamp(v*100+20,0,100)|0;
+  syncSliderLabels(); classify(); refreshAll();
+  toast(`Water tuned to H${h|0}° S${(s*100)|0}% V${(v*100)|0}%`);
+}
+
+/* crop = resample working grids to selection, shift georef */
+function applyCrop(){
+  let {x0,y0,x1,y1}=S.sel; S.sel=null;
+  const ax=clamp(Math.min(x0,x1)|0,0,S.W-1), ay=clamp(Math.min(y0,y1)|0,0,S.H-1);
+  const bx=clamp(Math.max(x0,x1)|0,0,S.W), by=clamp(Math.max(y0,y1)|0,0,S.H);
+  const nw=bx-ax, nh=by-ay; if(nw<4||nh<4){render();return;}
+  // new georef
+  let geo;
+  if(S.geo.mode==='bbox'){
+    const tl=pxToLatLon(ax,ay), br=pxToLatLon(bx,by);
+    geo={mode:'bbox',minLat:br.lat,maxLat:tl.lat,minLon:tl.lon,maxLon:br.lon};
+  } else { const bl=pxToLatLon(ax,by); geo={mode:'origin',originLat:bl.lat,originLon:bl.lon,res:S.geo.res}; }
+  // crop source into a canvas then re-ingest (keeps res cap logic consistent)
+  const sc=document.createElement('canvas');sc.width=S.W;sc.height=S.H;sc.getContext('2d').putImageData(S.src,0,0);
+  const cc=document.createElement('canvas');cc.width=nw;cc.height=nh;
+  cc.getContext('2d').drawImage(sc,ax,ay,nw,nh,0,0,nw,nh);
+  const lbl=S.source; ingest(cc,geo,lbl); toast('Cropped to selection.');
+}
+
+/* ====================== WAYPOINT PANEL ====================== */
+function renderWaypoints(){
+  const wrap=$('wpList'); const n=S.waypoints.length;
+  $('wpCount').textContent=n?`(${n})`:'';
+  if(!n){wrap.innerHTML='<div class="hint">Use the <b>Waypoint</b> tool and click the map, or add by coordinate below.</div>';return;}
+  wrap.innerHTML='';
+  S.waypoints.forEach((w,i)=>{
+    const row=document.createElement('div');row.className='item';
+    row.innerHTML=`<span class="dot" style="background:var(--wp)"></span>
+      <span class="txt">#${i+1} ${w.lat!=null?w.lat.toFixed(5)+', '+w.lon.toFixed(5):'px '+(w.x|0)+','+(w.y|0)}</span>
+      <span class="mv" data-up="${i}">▲</span><span class="mv" data-dn="${i}">▼</span>
+      <span class="x" data-del="${i}">×</span>`;
+    wrap.appendChild(row);
+  });
+  wrap.querySelectorAll('[data-del]').forEach(b=>b.onclick=()=>{S.waypoints.splice(+b.dataset.del,1);refreshAll();});
+  wrap.querySelectorAll('[data-up]').forEach(b=>b.onclick=()=>{const i=+b.dataset.up;if(i>0){[S.waypoints[i-1],S.waypoints[i]]=[S.waypoints[i],S.waypoints[i-1]];refreshAll();}});
+  wrap.querySelectorAll('[data-dn]').forEach(b=>b.onclick=()=>{const i=+b.dataset.dn;if(i<S.waypoints.length-1){[S.waypoints[i+1],S.waypoints[i]]=[S.waypoints[i],S.waypoints[i+1]];refreshAll();}});
+}
+$('btnAddWp').onclick=()=>{
+  const lat=+$('wpLat').value,lon=+$('wpLon').value;
+  if(Number.isNaN(lat)||Number.isNaN(lon)){toast('Enter lat & lon.',true);return;}
+  const p=S.geo?latLonToPx(lat,lon):{x:0,y:0};
+  S.waypoints.push({x:p.x,y:p.y,lat,lon}); $('wpLat').value='';$('wpLon').value=''; refreshAll();
+};
+
+/* ====================== METADATA / YAML ====================== */
+function yamlText(){
+  const name=$('mImg').value||'map';
+  const res=(+$('mRes').value||0.05).toFixed(4);
+  const ox=(+$('mOx').value||0).toFixed(2), oy=(+$('mOy').value||0).toFixed(2), yaw=(+$('mYaw').value||0);
+  return `image: ${name}.pgm
+mode: trinary
+resolution: ${res}
+origin: [${ox}, ${oy}, ${yaw}]
+negate: ${$('mNeg').value}
+occupied_thresh: ${(+$('mOcc').value||0.65)}
+free_thresh: ${(+$('mFree').value||0.196)}`;
+}
+function updateMeta(){
+  $('metaSize').textContent=S.W?`${S.W} × ${S.H}`:'—';
+  $('yamlPrev').textContent=yamlText();
+}
+
+/* ====================== OFFLINE SAVED MAPS ====================== */
+// Saves/restores the actual raw source imagery (the "geological" map),
+// not the flattened classified PGM - so a reloaded map can still be
+// re-thresholded, zoned and manually painted with real understanding of
+// what's underneath, exactly like a freshly-fetched map.
+function imageDataToPngBlob(imgData){
+  const c=document.createElement('canvas'); c.width=imgData.width; c.height=imgData.height;
+  c.getContext('2d').putImageData(imgData,0,0);
+  return new Promise(resolve=>c.toBlob(resolve,'image/png'));
+}
+function overridesToPngBlob(){
+  if(!S.ovr || !S.ovr.some(v=>v!==-1)) return Promise.resolve(null);
+  const c=document.createElement('canvas'); c.width=S.W; c.height=S.H;
+  const ctx=c.getContext('2d'); const im=ctx.createImageData(S.W,S.H);
+  for(let i=0;i<S.ovr.length;i++){
+    const v=S.ovr[i]===-1?255:S.ovr[i]; const p=i*4;
+    im.data[p]=v; im.data[p+1]=v; im.data[p+2]=v; im.data[p+3]=255;
+  }
+  ctx.putImageData(im,0,0);
+  return new Promise(resolve=>c.toBlob(resolve,'image/png'));
+}
+function pngBase64ToImageData(b64){
+  return new Promise((resolve,reject)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const c=document.createElement('canvas'); c.width=img.naturalWidth; c.height=img.naturalHeight;
+      const ctx=c.getContext('2d'); ctx.drawImage(img,0,0);
+      resolve(ctx.getImageData(0,0,img.naturalWidth,img.naturalHeight));
+    };
+    img.onerror=()=>reject(new Error('Failed to decode saved image'));
+    img.src='data:image/png;base64,'+b64;
+  });
+}
+
+async function refreshSavedMapsList(){
+  try{
+    const r=await fetch('/api/saved_maps');
+    const j=await r.json();
+    const sel=$('savedMapsList');
+    const prev=sel.value;
+    sel.innerHTML='<option value="">— saved maps —</option>';
+    (j.maps||[]).forEach(m=>{
+      const opt=document.createElement('option');
+      opt.value=m.name; opt.textContent=m.name;
+      sel.appendChild(opt);
+    });
+    if(prev) sel.value=prev;
+  }catch(e){ /* GCS may be offline briefly - silently retry next call */ }
+}
+
+$('btnSaveMap').onclick=async()=>{
+  if(!S.src){ toast('Load or generate a map first.',true); return; }
+  const name=($('saveMapName').value||'').trim();
+  if(!name){ toast('Enter a name to save as.',true); return; }
+  const btn=$('btnSaveMap'); const prevLabel=btn.textContent;
+  btn.disabled=true; btn.textContent='Saving…';
+  try{
+    const fd=new FormData();
+    fd.append('name', name);
+    fd.append('pgm', new Blob([buildPGM()],{type:'image/x-portable-graymap'}), 'map.pgm');
+    fd.append('yaml', new Blob([yamlText()],{type:'text/yaml'}), 'map.yaml');
+    fd.append('mission_json', new Blob([JSON.stringify(missionJSON(),null,2)],{type:'application/json'}), 'mission.json');
+    fd.append('source_png', await imageDataToPngBlob(S.src), 'source.png');
+    const ovrBlob=await overridesToPngBlob();
+    if(ovrBlob) fd.append('overrides_png', ovrBlob, 'overrides.png');
+    const r=await fetch('/api/saved_maps',{method:'POST',body:fd});
+    const j=await r.json();
+    if(!r.ok||j.error){ toast(`Save failed: ${j.error||'server error'}`,true); }
+    else{
+      toast(j.renamed?`Saved as "${j.name}" ("${name}" was already taken by a different map).`:`Saved as "${j.name}".`);
+      $('saveMapName').value=''; refreshSavedMapsList();
+    }
+  }catch(e){ toast(`Save failed: ${e.message}`,true); }
+  finally{ btn.disabled=false; btn.textContent=prevLabel; }
+};
+
+$('btnLoadMap').onclick=async()=>{
+  const name=$('savedMapsList').value;
+  if(!name){ toast('Pick a saved map first.',true); return; }
+  const btn=$('btnLoadMap'); const prevLabel=btn.textContent;
+  btn.disabled=true; btn.textContent='Loading…';
+  try{
+    const r=await fetch(`/api/saved_maps/${encodeURIComponent(name)}`);
+    const j=await r.json();
+    if(!r.ok||j.error){ toast(`Load failed: ${j.error||'server error'}`,true); return; }
+    if(!j.source_png_base64){ toast('Saved map has no source imagery - save it again from this build to fix.',true); return; }
+
+    const mj=j.mission_json||{};
+    const mapInfo=mj.map||{};
+    const bl=mapInfo.bottom_left;
+    if(!bl){ toast('Saved map is missing its geo-reference (bottom_left) - cannot load.',true); return; }
+    const resMatch=j.yaml_text.match(/^resolution:\s*([\d.eE+-]+)/m);
+    const resolution=resMatch?parseFloat(resMatch[1]):(mapInfo.resolution||0.8);
+    const cset=mj.classify_settings||{};
+
+    // Restore the raw source imagery (not the flattened PGM) so thresholds,
+    // Pick Water, zones and manual paint can all keep working on it exactly
+    // like a freshly-fetched map - this is the whole point of an offline save.
+    S.src=await pngBase64ToImageData(j.source_png_base64);
+    S.W=S.src.width; S.H=S.src.height;
+    S.source=`Saved: ${name}`;
+
+    if(cset.hueMin!=null) $('hueMin').value=cset.hueMin;
+    if(cset.hueMax!=null) $('hueMax').value=cset.hueMax;
+    if(cset.satMin!=null) $('satMin').value=cset.satMin;
+    if(cset.valMin!=null) $('valMin').value=cset.valMin;
+    if(cset.valMax!=null) $('valMax').value=cset.valMax;
+    if(cset.black!=null) $('black').value=cset.black;
+    if(cset.gray!=null) $('gray').value=cset.gray;
+    if(cset.unkDefault!=null) $('unkDefault').checked=cset.unkDefault;
+    if(cset.mNeg!=null) $('mNeg').value=cset.mNeg;
+    if(cset.mOcc!=null) $('mOcc').value=cset.mOcc;
+    if(cset.mFree!=null) $('mFree').value=cset.mFree;
+    classify();
+
+    S.ovr=new Int8Array(S.W*S.H).fill(-1);
+    if(j.overrides_png_base64){
+      const ovrImg=await pngBase64ToImageData(j.overrides_png_base64);
+      for(let k=0;k<S.W*S.H;k++){
+        const v=ovrImg.data[k*4];
+        S.ovr[k]=(v===255)?-1:v;
+      }
+    }
+    S.zones=(mj.zones||[]).map(z=>({kind:z.kind,pts:z.points_px.map(([x,y])=>({x,y}))}));
+    S.poly=[]; S.sel=null; S.undo=[]; S.redo=[]; updateUndoBtns();
+    S.geo={mode:'origin', originLat:bl.lat, originLon:bl.lon, res:resolution};
+    S.waypoints=(mj.waypoints||[]).map(w=>({x:0,y:0,lat:w.lat,lon:w.lon}));
+
+    $('mImg').value=name;
+    $('mRes').value=resolution;
+    if(mj.start){ $('startLat').value=mj.start.lat.toFixed(6); $('startLon').value=mj.start.lon.toFixed(6); }
+    if(mj.goal){ $('goalLat').value=mj.goal.lat.toFixed(6); $('goalLon').value=mj.goal.lon.toFixed(6); }
+
+    fitZoom(); placeEndpoints(); refreshAll();
+    $('empty').style.display='none';
+    ['btnPgm','btnYaml','btnZip','btnUploadVehicle','btnStartMission'].forEach(b=>$(b).disabled=false);
+    setStatus();
+    toast(`Loaded "${name}".`);
+  }catch(e){ toast(`Load failed: ${e.message}`,true); }
+  finally{ btn.disabled=false; btn.textContent=prevLabel; }
+};
+
+$('btnDeleteMap').onclick=async()=>{
+  const name=$('savedMapsList').value;
+  if(!name){ toast('Pick a saved map first.',true); return; }
+  await fetch(`/api/saved_maps/${encodeURIComponent(name)}`,{method:'DELETE'});
+  toast(`Deleted "${name}".`);
+  refreshSavedMapsList();
+};
+
+/* Re-pushes a saved map's pgm/yaml straight from GCS-local disk to the
+   vehicle, without touching the canvas/imagery at all - see
+   /api/mission/send_local_map. Lets a previously-saved map be resynced to
+   the Jetson (e.g. after a reboot/reflash) or handed to a second vehicle. */
+$('btnSendLocalMap').onclick=async()=>{
+  const name=$('savedMapsList').value;
+  if(!name){ toast('Pick a saved map first.',true); return; }
+  const btn=$('btnSendLocalMap'); const prevLabel=btn.textContent;
+  btn.disabled=true; btn.textContent='Sending…';
+  try{
+    const r=await fetch('/api/mission/send_local_map',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+    const j=await r.json();
+    if(!r.ok||j.error){ toast(`Send failed: ${j.error||'server error'}`,true); return; }
+    toast(j.warning?`Sent "${name}" to vehicle. ⚠ ${j.warning}`:`Sent "${name}" to vehicle.`);
+    refreshVehicleMapsList();
+  }catch(e){ toast(`Send failed: ${e.message}`,true); }
+  finally{ btn.disabled=false; btn.textContent=prevLabel; }
+};
+
+refreshSavedMapsList();
+
+/* ====================== PICK START/GOAL ON MAP ====================== */
+// Lazily-built Leaflet picker (ESRI World Imagery tiles - same free, no-key
+// source already used for Fetch Map) so users can drop Start/Goal pins
+// instead of copying lat/lon out of Google Maps by hand.
+let pickerMap=null, pickerPins={start:null,goal:null}, pickerActive='start';
+
+function pickerIcon(kind){
+  return L.divIcon({className:'',html:`<div class="picker-pin ${kind}"></div>`,iconSize:[16,16],iconAnchor:[8,14]});
+}
+function updatePickerCoordsLabel(){
+  const s=pickerPins.start?pickerPins.start.getLatLng():null;
+  const g=pickerPins.goal?pickerPins.goal.getLatLng():null;
+  $('pickerCoords').textContent=
+    `start ${s?s.lat.toFixed(6)+', '+s.lng.toFixed(6):'—'}   |   goal ${g?g.lat.toFixed(6)+', '+g.lng.toFixed(6):'—'}`;
+}
+function setPickerPin(kind,lat,lon){
+  if(pickerPins[kind]){ pickerPins[kind].setLatLng([lat,lon]); return; }
+  const m=L.marker([lat,lon],{draggable:true,icon:pickerIcon(kind)}).addTo(pickerMap);
+  m.on('dragend',updatePickerCoordsLabel);
+  pickerPins[kind]=m;
+}
+function setPickerActive(kind){
+  pickerActive=kind;
+  $('pmStart').classList.toggle('active',kind==='start');
+  $('pmGoal').classList.toggle('active',kind==='goal');
+}
+function ensurePickerMap(){
+  if(pickerMap) return;
+  pickerMap=L.map('pickerMap',{zoomControl:true});
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    maxZoom:19, attribution:'Esri World Imagery'
+  }).addTo(pickerMap);
+  pickerMap.on('click',e=>{ setPickerPin(pickerActive,e.latlng.lat,e.latlng.lng); updatePickerCoordsLabel(); });
+}
+function openPicker(){
+  ensurePickerMap();
+  const sLat=+$('startLat').value||0, sLon=+$('startLon').value||0;
+  const gLat=+$('goalLat').value||0, gLon=+$('goalLon').value||0;
+  setPickerPin('start',sLat,sLon);
+  setPickerPin('goal',gLat,gLon);
+  setPickerActive('start');
+  updatePickerCoordsLabel();
+  $('pickerOverlay').style.display='grid';
+  setTimeout(()=>{
+    pickerMap.invalidateSize();
+    const b=L.latLngBounds([[sLat,sLon],[gLat,gLon]]);
+    pickerMap.fitBounds(b.pad(0.6));
+  },30);
+}
+function closePicker(){ $('pickerOverlay').style.display='none'; }
+$('btnPickCoords').onclick=openPicker;
+$('pickerClose').onclick=closePicker;
+$('pickerCancel').onclick=closePicker;
+$('pmStart').onclick=()=>setPickerActive('start');
+$('pmGoal').onclick=()=>setPickerActive('goal');
+$('pickerApply').onclick=()=>{
+  const s=pickerPins.start.getLatLng(), g=pickerPins.goal.getLatLng();
+  $('startLat').value=s.lat.toFixed(6); $('startLon').value=s.lng.toFixed(6);
+  $('goalLat').value=g.lat.toFixed(6); $('goalLon').value=g.lng.toFixed(6);
+  if(S.geo) updateMapOrigin();
+  placeEndpoints(); refreshAll();
+  closePicker();
+  toast('Start & Goal updated from map.');
+};
+
+/* ====================== EXPORT ====================== */
+function buildPGM(){
+  const fg=finalGrid(); const body=new Uint8Array(S.W*S.H);
+  for(let i=0;i<fg.length;i++) body[i]=fg[i]===FREE?254:fg[i]===OCC?0:205;
+  const header=new TextEncoder().encode(`P5\n${S.W} ${S.H}\n255\n`);
+  const out=new Uint8Array(header.length+body.length);
+  out.set(header,0);out.set(body,header.length);
+  return out;
+}
+// Waypoints must reach the mission as map-frame METERS, matching how
+// origin: is computed (see updateMapOrigin) - SetWaypoint.cpp uses each
+// Point directly as a map-frame pose, with no /fromLL conversion at
+// mission runtime (unlike the single goal_lat/goal_lon, which DOES convert
+// live via SetGoalPose). So this has to happen client-side, relative to
+// the SAME anchor (Start) that SetPositionOnMap will use to define
+// map-frame (0,0) at mission start.
+function waypointsToMapFrame(){
+  const anchorLat=+$('startLat').value, anchorLon=+$('startLon').value;
+  return S.waypoints
+    .filter(w=>w.lat!=null && w.lon!=null)
+    .map(w=>{
+      const dLat=w.lat-anchorLat, dLon=w.lon-anchorLon;
+      const north=dLat*111320, east=dLon*111320*Math.cos(anchorLat*Math.PI/180);
+      return [+east.toFixed(2), +north.toFixed(2)];
+    });
+}
+function missionJSON(){
+  const llUTM=p=>p&&p.lat!=null?{...latLonToUTM(p.lat,p.lon)}:null;
+  // bottom_left is the image's bottom-left pixel's actual lat/lon (ROS map
+  // origin pixel) - captured directly here (not derived) so a saved map
+  // can be reloaded later by setting S.geo straight from this value, with
+  // no reverse math against origin:/anchor needed (see loadSavedMap()).
+  const bl=pxToLatLon(0,S.H);
+  return {
+    map:{image:($('mImg').value||'map')+'.pgm',resolution:+$('mRes').value,
+         origin:[+$('mOx').value,+$('mOy').value,+$('mYaw').value],
+         bottom_left:bl?{lat:bl.lat,lon:bl.lon}:null,
+         width:S.W,height:S.H,source:S.source},
+    start:S.start?{lat:S.start.lat,lon:S.start.lon,px:[S.start.x|0,S.start.y|0],utm:llUTM(S.start)}:null,
+    goal:S.goal?{lat:S.goal.lat,lon:S.goal.lon,px:[S.goal.x|0,S.goal.y|0],utm:llUTM(S.goal)}:null,
+    waypoints:S.waypoints.map((w,i)=>({i:i+1,lat:w.lat,lon:w.lon,px:[w.x|0,w.y|0],utm:llUTM(w)})),
+    zones:S.zones.map(z=>({kind:z.kind,points_px:z.pts.map(p=>[p.x|0,p.y|0])})),
+    // classify() thresholds - saved so a reloaded raw source image can be
+    // re-classified exactly as it was, not just replayed as a frozen PGM.
+    classify_settings:{
+      hueMin:+$('hueMin').value, hueMax:+$('hueMax').value,
+      satMin:+$('satMin').value, valMin:+$('valMin').value, valMax:+$('valMax').value,
+      black:+$('black').value, gray:+$('gray').value,
+      unkDefault:$('unkDefault').checked,
+      mNeg:+$('mNeg').value, mOcc:+$('mOcc').value, mFree:+$('mFree').value,
+    },
+  };
+}
+function download(blob,name){const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1500);}
+$('btnPgm').onclick=()=>{download(new Blob([buildPGM()],{type:'image/x-portable-graymap'}),($('mImg').value||'map')+'.pgm');toast('PGM exported.');};
+$('btnYaml').onclick=()=>{download(new Blob([yamlText()],{type:'text/yaml'}),($('mImg').value||'map')+'.yaml');toast('YAML exported.');};
+$('btnZip').onclick=async()=>{
+  if(!window.JSZip){toast('ZIP library unavailable.',true);return;}
+  const name=$('mImg').value||'map';
+  const zip=new JSZip();
+  zip.file(`${name}.pgm`,buildPGM());
+  zip.file(`${name}.yaml`,yamlText());
+  zip.file('mission.json',JSON.stringify(missionJSON(),null,2));
+  zip.file('README.md',
+`# AUV Nav2 Map Package — ${name}
+
+Generated by AUV GCS (map → ROS2 occupancy grid).
+
+## Files
+- \`${name}.pgm\`  — P5 grayscale occupancy grid (254 free / 0 occupied / 205 unknown)
+- \`${name}.yaml\` — Nav2 map_server metadata (origin = meters from Start, ENU - see below)
+- \`mission.json\` — anchor/start, goal, waypoints, zones (WGS84 + UTM + pixel)
+
+## Load in ROS2
+\`\`\`
+ros2 run nav2_map_server map_server --ros-args -p yaml_filename:=${name}.yaml
+\`\`\`
+
+## Map anchor - REQUIRED before this map means anything to the AUV
+\`${name}.yaml\`'s \`origin:\` field is in meters, relative to the Start point
+below (NOT UTM) - the AUV's own "map" frame is a local ENU plane centered on
+whatever lat/lon SetPositionOnMap last anchored it to. These only agree if
+Start Mission is called with this exact point as latitude/longitude:
+
+    start lat = ${$('startLat').value}
+    start lon = ${$('startLon').value}
+
+Source imagery: ${S.source}.  Grid: ${S.W}×${S.H} px @ ${(+$('mRes').value).toFixed(3)} m/px.
+`);
+  const blob=await zip.generateAsync({type:'blob'});
+  download(blob,`${name}_nav2.zip`);
+  toast('Nav2 package exported.');
+};
+
+/* Sends the same three files the .zip export bundles, but straight to the
+   GCS backend (this page is served by laptop_server_d_m_light.py at
+   /mission-planner/map-planner, so a relative fetch stays same-origin even
+   though this is embedded in an <iframe>). The backend forwards each to
+   the Jetson tagged category="map" - see api_mission_upload_map(). */
+/* Builds the same multipart bundle the Offline Maps "Save" button sends
+   (pgm/yaml + mission_json/source_png/overrides_png where available) so
+   that any push to the vehicle ALSO leaves a fully reloadable local save
+   under the exact name the vehicle ends up with - see
+   api_mission_upload_map()'s SAVED_MAPS_DIR handling. source_png/
+   overrides_png are only included if a source image is actually loaded
+   (not e.g. a bare Upload Image without Fetch/paint yet). */
+async function buildMapUploadForm(name){
+  const fd=new FormData();
+  fd.append('pgm', new Blob([buildPGM()],{type:'image/x-portable-graymap'}), `${name}.pgm`);
+  fd.append('yaml', new Blob([yamlText()],{type:'text/yaml'}), `${name}.yaml`);
+  fd.append('mission_json', new Blob([JSON.stringify(missionJSON(),null,2)],{type:'application/json'}), 'mission.json');
+  if(S.src){
+    fd.append('source_png', await imageDataToPngBlob(S.src), 'source.png');
+    const ovrBlob=await overridesToPngBlob();
+    if(ovrBlob) fd.append('overrides_png', ovrBlob, 'overrides.png');
+  }
+  return fd;
+}
+
+$('btnUploadVehicle').onclick=async()=>{
+  const name=$('mImg').value||'map';
+  const btn=$('btnUploadVehicle'); const prevLabel=btn.textContent;
+  btn.disabled=true; btn.textContent='Uploading…';
+  try{
+    const fd=await buildMapUploadForm(name);
+    const r=await fetch('/api/mission/upload_map',{method:'POST',body:fd});
+    const j=await r.json();
+    if(!r.ok||j.error){toast(`Upload failed: ${j.error||'server error'}`,true);}
+    else{
+      if(j.name && j.name!==name) $('mImg').value=j.name;
+      const renameNote=j.renamed?` (saved as "${j.name}" - name was taken by a different map)`:'';
+      toast(j.warning?`Map uploaded to vehicle${renameNote}. ⚠ ${j.warning}`:`Map uploaded to vehicle${renameNote}.`);
+      refreshVehicleMapsList(); refreshSavedMapsList();
+    }
+  }catch(e){toast(`Upload failed: ${e.message}`,true);}
+  finally{btn.disabled=false;btn.textContent=prevLabel;}
+};
+
+/* Uploads the current pgm+yaml (same as Upload to Vehicle above) then
+   starts a mission directly from this page's Start/Goal fields - no
+   saved-mission id, nothing persisted GCS-side. Mission Planner was
+   simplified down to just this page by explicit request: one map, one
+   start/goal pose, one Start button. Status/result lines stream into the
+   Mission Planner tab's shared console via window.parent - this page is
+   same-origin (served by laptop_server_d_m_light.py), so that's a plain
+   direct call, not postMessage. */
+$('btnStartMission').onclick=async()=>{
+  let name=$('mImg').value||'map';
+  const btn=$('btnStartMission'); const prevLabel=btn.textContent;
+  btn.disabled=true; btn.textContent='Uploading…';
+  let uploadWarning=null;
+  try{
+    const fd=await buildMapUploadForm(name);
+    const r=await fetch('/api/mission/upload_map',{method:'POST',body:fd});
+    const j=await r.json();
+    if(!r.ok||j.error){toast(`Upload failed: ${j.error||'server error'}`,true);return;}
+    // The upload may have auto-suffixed the name (a different map already
+    // saved under this one) - always start the mission against the name
+    // the vehicle actually confirmed, not the pre-upload guess.
+    if(j.name){ name=j.name; if($('mImg').value!==name) $('mImg').value=name; }
+    uploadWarning=j.warning||null;
+
+    btn.textContent='Starting…';
+    const startLat=+$('startLat').value, startLon=+$('startLon').value;
+    const goalLat=+$('goalLat').value, goalLon=+$('goalLon').value;
+    const startDelay=Math.max(0,+$('startDelay').value||0);
+    const headingDeg=+$('startHeading').value||0;
+    // start_north carries RADIANS in ENU convention (0=East, CCW), matching
+    // SetPositionOnMap's yaw port - NOT degrees despite the field's name
+    // (inherited from RunMissionTree.action, never renamed to avoid a
+    // rebuild). Converted here from the operator-facing compass heading
+    // (0=North, clockwise) so mission.xml can bind it directly with no
+    // math needed BT-side.
+    const startNorthRad=(90-headingDeg)*Math.PI/180;
+    const waypointList=waypointsToMapFrame();
+    const r2=await fetch('/api/mission/start_direct',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      start_lat:startLat, start_lon:startLon, goal_lat:goalLat, goal_lon:goalLon,
+      map_yaml_path:`map/${name}.yaml`, map_pgm_path:`map/${name}.pgm`,
+      waypoint_list:waypointList, start_delay_sec:startDelay, start_north:startNorthRad,
+    })});
+    const j2=await r2.json();
+    if(j2.error){toast(`Start failed: ${j2.error}`,true);}
+    else{
+      const warnNote=uploadWarning?` ⚠ ${uploadWarning}`:'';
+      toast((startDelay>0?`Mission started — vehicle waits ${startDelay}s before launch.`:'Mission started.')+warnNote);
+      try{ window.parent.logMissionStatus(`Mission started: start=(${startLat},${startLon}) goal=(${goalLat},${goalLon}) heading=${headingDeg}° waypoints=${waypointList.length} delay=${startDelay}s map=${name}`); }catch(e){}
+      startLaunchCountdown(startDelay);
+      refreshVehicleMapsList(); refreshSavedMapsList();
+    }
+  }catch(e){toast(`Failed: ${e.message}`,true);}
+  finally{btn.disabled=false;btn.textContent=prevLabel;}
+};
+
+document.querySelectorAll('#delayQuick [data-delay]').forEach(b=>b.onclick=()=>{ $('startDelay').value=b.dataset.delay; });
+
+/* ====================== VEHICLE MAPS / FAST MISSION ======================
+   "Start Fast Mission": the vehicle already has a map on disk (saved once
+   via Upload to Vehicle / Start Mission above, ideally over a fast
+   Ethernet/manual connection - see api_mission_upload_map()). This lists
+   those already-on-vehicle maps by name (api_mission_list_maps(), which
+   just asks the Jetson to scan jetson_files/map/ - see
+   TcpClientNode._list_saved_maps()) and starts a mission that references
+   one directly via start_direct's map_yaml_path/map_pgm_path, WITHOUT
+   sending pgm/yaml again - only the small parameter fields above (start/
+   goal/waypoints/delay/heading) go out, which is what makes this safe to
+   use over a slow tether. Deliberately a separate button/flow from Upload
+   to Vehicle / Start Mission above rather than a change to them - those
+   keep working exactly as before (e.g. for the initial upload itself,
+   still needed at least once and best done over a fast link). */
+async function refreshVehicleMapsList(){
+  const sel=$('vehicleMapsList');
+  const prevValue=sel.value;
+  sel.innerHTML='<option value="">— checking vehicle… —</option>';
+  try{
+    const r=await fetch('/api/mission/list_maps',{method:'POST'});
+    const j=await r.json();
+    if(!r.ok||j.error){
+      sel.innerHTML='<option value="">— could not reach vehicle —</option>';
+      $('btnStartFastMission').disabled=true;
+      return;
+    }
+    const maps=j.maps||[];
+    if(!maps.length){
+      sel.innerHTML='<option value="">— none saved on vehicle yet —</option>';
+      $('btnStartFastMission').disabled=true;
+      return;
+    }
+    sel.innerHTML=maps.map(m=>`<option value="${m.name}">${m.name}</option>`).join('');
+    if(maps.some(m=>m.name===prevValue)) sel.value=prevValue;
+    $('btnStartFastMission').disabled=false;
+  }catch(e){
+    sel.innerHTML='<option value="">— could not reach vehicle —</option>';
+    $('btnStartFastMission').disabled=true;
+  }
+}
+$('btnRefreshVehicleMaps').onclick=refreshVehicleMapsList;
+refreshVehicleMapsList();
+
+/* Same start_direct call as Start Mission above, just without the
+   upload_map step first - map_yaml_path/map_pgm_path point at a map the
+   vehicle already has on disk. */
+$('btnStartFastMission').onclick=async()=>{
+  const name=$('vehicleMapsList').value;
+  if(!name){ toast('Pick a vehicle map first.',true); return; }
+  const btn=$('btnStartFastMission'); const prevLabel=btn.textContent;
+  btn.disabled=true; btn.textContent='Starting…';
+  try{
+    const startLat=+$('startLat').value, startLon=+$('startLon').value;
+    const goalLat=+$('goalLat').value, goalLon=+$('goalLon').value;
+    const startDelay=Math.max(0,+$('startDelay').value||0);
+    const headingDeg=+$('startHeading').value||0;
+    const startNorthRad=(90-headingDeg)*Math.PI/180;
+    const waypointList=waypointsToMapFrame();
+    const r=await fetch('/api/mission/start_direct',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
+      start_lat:startLat, start_lon:startLon, goal_lat:goalLat, goal_lon:goalLon,
+      map_yaml_path:`map/${name}.yaml`, map_pgm_path:`map/${name}.pgm`,
+      waypoint_list:waypointList, start_delay_sec:startDelay, start_north:startNorthRad,
+    })});
+    const j=await r.json();
+    if(j.error){toast(`Start failed: ${j.error}`,true);}
+    else{
+      toast(startDelay>0?`Fast mission started — vehicle waits ${startDelay}s before launch.`:'Fast mission started.');
+      try{ window.parent.logMissionStatus(`Fast mission started (vehicle map "${name}", no upload): start=(${startLat},${startLon}) goal=(${goalLat},${goalLon}) heading=${headingDeg}° waypoints=${waypointList.length} delay=${startDelay}s`); }catch(e){}
+      startLaunchCountdown(startDelay);
+    }
+  }catch(e){toast(`Failed: ${e.message}`,true);}
+  finally{btn.disabled=false;btn.textContent=prevLabel;}
+};
+
+/* ====================== MISSION FILE (JSON-ONLY UPLOAD) ======================
+   "Upload only the JSON file of the mission, reuse the saved map": a small,
+   portable counterpart to missionJSON() (which is the big Nav2-package
+   export - imagery-classification settings, zones, UTM, all of it). This
+   is just enough to start a mission that references a map by NAME - the
+   backend (/api/mission/upload_json) resolves that name against the
+   vehicle's own map list first, then this GCS's Offline Maps, uploading
+   only if neither already has the mission loaded. waypoints are lat/lon
+   (NOT map-frame meters) so the server can do the anchor-relative
+   conversion itself - this file has to be usable standalone (e.g. via
+   curl) without the browser's waypointsToMapFrame() ever running. */
+function missionOnlyJSON(){
+  return {
+    schema:'pralay_mission_v1',
+    map_name:$('vehicleMapsList').value||$('mImg').value||'map',
+    start_lat:+$('startLat').value, start_lon:+$('startLon').value,
+    goal_lat:+$('goalLat').value, goal_lon:+$('goalLon').value,
+    heading_deg:+$('startHeading').value||0,
+    start_delay_sec:Math.max(0,+$('startDelay').value||0),
+    waypoints:S.waypoints.filter(w=>w.lat!=null&&w.lon!=null).map(w=>({lat:w.lat,lon:w.lon})),
+  };
+}
+$('btnDownloadMissionJson').onclick=()=>{
+  const mj=missionOnlyJSON();
+  download(new Blob([JSON.stringify(mj,null,2)],{type:'application/json'}), `${mj.map_name}_mission.json`);
+  toast('Mission JSON exported.');
+};
+$('btnUploadMissionJson').onclick=()=>$('missionJsonFile').click();
+$('missionJsonFile').onchange=async e=>{
+  const file=e.target.files[0];
+  e.target.value='';
+  if(!file) return;
+  const btn=$('btnUploadMissionJson'); const prevLabel=btn.textContent;
+  btn.disabled=true; btn.textContent='Uploading…';
+  try{
+    const fd=new FormData();
+    fd.append('file', file, file.name);
+    const r=await fetch('/api/mission/upload_json',{method:'POST',body:fd});
+    const j=await r.json();
+    if(!r.ok||j.error){ toast(`Mission upload failed: ${j.error||'server error'}`,true); return; }
+    const sourceNote=j.map_source==='vehicle'?'map already on vehicle, no transfer':`map sent from GCS storage${j.warning?' - '+j.warning:''}`;
+    toast(`Mission started (map "${j.map_name}", ${sourceNote}).`);
+    try{ window.parent.logMissionStatus(`Mission JSON uploaded and started: map="${j.map_name}" (${sourceNote})`); }catch(err){}
+    refreshVehicleMapsList();
+  }catch(e){ toast(`Mission upload failed: ${e.message}`,true); }
+  finally{ btn.disabled=false; btn.textContent=prevLabel; }
+};
+
+/* ====================== UI WIRING ====================== */
+function setTool(t){
+  S.tool=t;
+  document.querySelectorAll('.rail .tool').forEach(b=>b.classList.toggle('active',b.dataset.tool===t));
+  stage.classList.toggle('pan',t==='pan');
+  $('stTool').innerHTML=`tool <b>${t}</b>`;
+  if(t!=='polygon')S.poly=[];
+  render();
+}
+document.querySelectorAll('.rail .tool').forEach(b=>b.onclick=()=>setTool(b.dataset.tool));
+
+function setStatus(){
+  $('stMap').innerHTML=`map <b style="color:var(--free)">loaded</b>`;
+  $('stSrc').innerHTML=`source <b>${S.source}</b>`;
+  $('stSize').innerHTML=`size <b>${S.W}×${S.H}</b>`;
+}
+
+/* tabs */
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));t.classList.add('active');
+  document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active',p.dataset.pane===t.dataset.tab));
+});
+
+/* zone-kind selector lives above polygon tool — inject a small bar into Mission group */
+(function injectZoneBar(){
+  const host=document.querySelector('.tool[data-tool="polygon"]').closest('.toolgrid').parentElement;
+  const bar=document.createElement('div');bar.className='zonebar';bar.style.marginTop='8px';
+  bar.innerHTML=`<div class="zb nogo active" data-z="nogo">No-Go</div><div class="zb go" data-z="go">Go</div><div class="zb unk" data-z="unknown">Unknown</div>`;
+  host.appendChild(bar);
+  bar.querySelectorAll('.zb').forEach(z=>z.onclick=()=>{
+    S.zoneKind=z.dataset.z; bar.querySelectorAll('.zb').forEach(x=>x.classList.remove('active'));z.classList.add('active');
+    if(S.tool!=='polygon')setTool('polygon');
+  });
+})();
+
+/* sliders */
+function syncSliderLabels(){
+  $('hueVal').textContent=`${$('hueMin').value}–${$('hueMax').value}°`;
+  $('satVal').textContent=`${$('satMin').value}%`;
+  $('valVal').textContent=`${$('valMin').value}–${$('valMax').value}%`;
+  $('blackVal').textContent=$('black').value;
+  $('grayVal').textContent=`${$('gray').value}%`;
+  $('brushVal').textContent=`${$('brush').value} px`;
+}
+['hueMin','hueMax','satMin','valMin','valMax','black','gray','unkDefault'].forEach(id=>{
+  $(id).addEventListener('input',()=>{syncSliderLabels();if(S.src){classify();refreshAll();}});
+});
+$('brush').addEventListener('input',()=>{S.brush=+$('brush').value;syncSliderLabels();});
+$('overlay').addEventListener('input',render);
+['mImg','mRes','mOx','mOy','mYaw','mNeg','mOcc','mFree'].forEach(id=>$(id).addEventListener('input',()=>{
+  if(S.geo&&S.geo.mode==='origin'){S.geo.res=+$('mRes').value;placeEndpoints();}
+  updateMeta(); markDirty(); render();
+}));
+
+/* endpoint inputs */
+['startLat','startLon','goalLat','goalLon'].forEach(id=>$(id).addEventListener('change',()=>{ if(S.src){placeEndpoints();refreshAll();} }));
+// Start is also the georeferencing anchor (see deriveGeoref/updateMapOrigin) -
+// moving it must recompute origin: too, not just re-place the S marker.
+['startLat','startLon'].forEach(id=>$(id).addEventListener('change',()=>{ if(S.geo)updateMapOrigin(); }));
+$('startHeading').addEventListener('input',()=>{ if(S.src) render(); });
+function syncEndpointInputs(){
+  if(S.start&&S.start.lat!=null){$('startLat').value=S.start.lat.toFixed(5);$('startLon').value=S.start.lon.toFixed(5);}
+  if(S.goal&&S.goal.lat!=null){$('goalLat').value=S.goal.lat.toFixed(5);$('goalLon').value=S.goal.lon.toFixed(5);}
+  $('gcDist').textContent=fmtDist(haversine(+$('startLat').value,+$('startLon').value,+$('goalLat').value,+$('goalLon').value));
+  updateEta();
+}
+$('cruiseSpeed').addEventListener('input',updateEta);
+
+/* buttons */
+$('btnFetch').onclick=fetchMap;
+$('btnUndo').onclick=undo;$('btnRedo').onclick=redo;
+$('btnReset').onclick=()=>{if(!S.src)return;snapshot();S.ovr.fill(-1);refreshAll();toast('Manual edits cleared.');};
+$('btnClearZones').onclick=()=>{if(!S.zones.length)return;snapshot();S.zones=[];S.poly=[];refreshAll();toast('Zones cleared.');};
+$('zoomIn').onclick=()=>{S.zoom=clamp(S.zoom*1.2,0.05,40);$('zoomLbl').textContent=Math.round(S.zoom*100)+'%';render();};
+$('zoomOut').onclick=()=>{S.zoom=clamp(S.zoom/1.2,0.05,40);$('zoomLbl').textContent=Math.round(S.zoom*100)+'%';render();};
+$('zoomFit').onclick=()=>{fitZoom();$('zoomLbl').textContent=Math.round(S.zoom*100)+'%';render();};
+
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
+  if((e.ctrlKey||e.metaKey)&&e.key==='z'){e.preventDefault();e.shiftKey?redo():undo();}
+  const map={p:'pan',c:'crop',o:'obstacle',f:'free',e:'erase',g:'fill',w:'waypoint'};
+  if(map[e.key])setTool(map[e.key]);
+});
+
+/* readout helper used by metadata YAML live preview */
+function updateReadoutInit(){updateMeta();}
+
+new ResizeObserver(resizeStage).observe(stage);
+syncSliderLabels(); resizeStage(); updateMeta(); updateEta();
+function toast(msg,err){const t=$('toast');t.textContent=msg;t.className='toast show'+(err?' err':'');clearTimeout(t._h);t._h=setTimeout(()=>t.className='toast',2600);}
+
+window.addEventListener('message', e => {
+  if (e.data && e.data.gcsTheme) {
+    document.documentElement.setAttribute('data-theme', e.data.gcsTheme);
+  }
+});
+const _savedMode = localStorage.getItem('gcsTheme') || 'dark';
+const _resolvedTheme = _savedMode === 'system'
+  ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+  : _savedMode;
+document.documentElement.setAttribute('data-theme', _resolvedTheme);
+/* Custom non-native dropdown enhancer for all <select> elements */
+(function initCustomSelects() {
+  document.querySelectorAll('select').forEach(sel => {
+    if (sel.closest('.mp-select-wrap')) return;
+    const wrap = document.createElement('div');
+    wrap.className = 'mp-select-wrap';
+    sel.parentNode.insertBefore(wrap, sel);
+    wrap.appendChild(sel);
+    sel.classList.add('mp-select-native');
+
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'mp-select-trigger';
+    const valSpan = document.createElement('span');
+    valSpan.className = 'mp-select-val';
+    btn.appendChild(valSpan);
+    btn.insertAdjacentHTML('beforeend', '<svg class="mp-select-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>');
+    wrap.appendChild(btn);
+
+    const menu = document.createElement('div');
+    menu.className = 'mp-select-menu';
+    wrap.appendChild(menu);
+
+    function syncMenu() {
+      const opts = Array.from(sel.options);
+      const selectedOpt = opts.find(o => o.value === sel.value) || opts[0];
+      valSpan.textContent = selectedOpt ? selectedOpt.textContent : '—';
+      menu.innerHTML = '';
+      opts.forEach(o => {
+        const item = document.createElement('div');
+        item.className = 'mp-select-opt' + (o.value === sel.value ? ' is-selected' : '');
+        const left = document.createElement('div');
+        left.style.cssText = 'display:flex;align-items:center;gap:7px;min-width:0;overflow:hidden;';
+        const dot = document.createElement('span');
+        dot.className = 'mp-select-opt-dot';
+        const lbl = document.createElement('span');
+        lbl.style.cssText = 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+        lbl.textContent = o.textContent;
+        left.appendChild(dot);
+        left.appendChild(lbl);
+        item.appendChild(left);
+        item.onclick = (ev) => {
+          ev.stopPropagation();
+          sel.value = o.value;
+          sel.dispatchEvent(new Event('change', { bubbles: true }));
+          sel.dispatchEvent(new Event('input', { bubbles: true }));
+          wrap.classList.remove('is-open');
+          syncMenu();
+        };
+        menu.appendChild(item);
+      });
+    }
+
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      document.querySelectorAll('.mp-select-wrap.is-open').forEach(w => {
+        if (w !== wrap) w.classList.remove('is-open');
+      });
+      wrap.classList.toggle('is-open');
+    };
+
+    sel.addEventListener('change', syncMenu);
+    new MutationObserver(syncMenu).observe(sel, { childList: true, subtree: true, attributes: true });
+    syncMenu();
+  });
+
+  document.addEventListener('click', (ev) => {
+    document.querySelectorAll('.mp-select-wrap.is-open').forEach(w => {
+      if (!w.contains(ev.target)) w.classList.remove('is-open');
+    });
+  });
+})();
+</script>
+</body>
+</html>
